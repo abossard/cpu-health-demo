@@ -61,9 +61,9 @@ The health model signal is a 5-minute average. The timeline also shows the raw 1
 
 - Source: `GET https://management.azure.com{resourceId}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M&aggregation=Average,Maximum&timespan={from}/{to}`, called with the manager identity (Reader on the node resource group covers `Microsoft.Insights/metrics/read`). `resourceId` is the node entity's `azureResourceId`.
 - The cache refreshes every 60 s from `lastSeen - 5 min`, because the newest minutes arrive late and can change. Points with a null average are skipped. A later value for the same minute replaces the earlier one. Backfill and retention: 24 h.
-- Response field `rawCpu`: `[{ "entity": "...", "points": [[t, average, maximum]] }]`, values rounded to 0.1. It follows the same `since` delta rules as `signals`. SSE deltas include it.
+- Response field `rawCpu`: `[{ "entity": "...", "points": [[t, average, maximum]] }]` with the values exactly as the Metrics API returns them. It follows the same `since` delta rules as `signals`. SSE deltas include it.
 - Page:
-  - each node chart draws the raw average as a thin line next to the 5-min signal, toggled by "Raw 1-min CPU (Metrics API)" (on by default)
+  - each node chart draws every raw point as a gold dot (never downsampled, at any zoom) next to the 5-min signal, toggled by "Raw 1-min CPU (Metrics API)" (on by default)
   - the legend names both lines
   - the crosshair tooltip lists raw average and max per node
   - Overlay mode keeps showing the signal lines only

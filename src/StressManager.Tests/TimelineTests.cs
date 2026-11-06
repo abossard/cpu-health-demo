@@ -256,12 +256,12 @@ public class TimelineTests
         string.Join(" ", points.Select(p => FormattableString.Invariant($"{(p.T - T0Ms) / 60_000}={p.Average}/{(p.Maximum is { } m ? m : "-")}")));
 
     [Theory]
-    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:01:00Z","average":71.715,"maximum":99.6},{"timeStamp":"2026-11-05T20:00:00Z","average":4.135,"maximum":4.34}]}]}]}""", "0=4.1/4.3 1=71.7/99.6")]
-    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:00:00Z"},{"timeStamp":"2026-11-05T20:01:00Z","average":98.58}]}]}]}""", "1=98.6/-")]
+    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:01:00Z","average":71.715,"maximum":99.6},{"timeStamp":"2026-11-05T20:00:00Z","average":4.135,"maximum":4.34}]}]}]}""", "0=4.135/4.34 1=71.715/99.6")]
+    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:00:00Z"},{"timeStamp":"2026-11-05T20:01:00Z","average":98.58}]}]}]}""", "1=98.58/-")]
     [InlineData("""{"value":[{"timeseries":[]}]}""", "")]
     [InlineData("""{"value":[]}""", "")]
     [InlineData("""{}""", "")]
-    public void ParseRawCpu_SkipsNullAveragesAndRoundsToTenth(string json, string expected) =>
+    public void ParseRawCpu_SkipsNullAveragesAndKeepsExactValues(string json, string expected) =>
         Assert.Equal(expected, RawNotation(Timeline.ParseRawCpu(json)));
 
     [Theory]

@@ -333,7 +333,7 @@ const TL = (() => {
 (() => {
   const { MIN, HOUR } = TL;
   const RETAIN = 24 * HOUR, SIGNAL_HOLD = 5 * MIN, SKEW_FLAG_SEC = 120;
-  const RAW_HOLD = 2 * MIN, RAW_GAP = 3 * MIN; // raw points are 1 min apart; a missing minute keeps the line, 3 break it
+  const RAW_HOLD = 2 * MIN; // raw points are 1 min apart; the tooltip uses a point up to 2 min old
   const MIN_SPAN = 2 * MIN, MAX_SPAN = RETAIN, EASE_MS = 70, TIP_MS = 100, KEY_ZOOM = 1.5, KEY_PAN = 0.2;
   const BUBBLE_W = 14, CLUSTER_PX = BUBBLE_W + 8; // markers cluster when the bubbles would be closer than 8 px
   const STATE_NAMES = ['Unknown', 'Healthy', 'Degraded', 'Unhealthy'];
@@ -670,7 +670,7 @@ const TL = (() => {
         drawStates(ctx, level.points, f, Math.max(SIGNAL_HOLD, level.size), w, h, true);
         drawThresholds(ctx, w, h);
         const raw = app.toggles.raw && dv.raw[m.entity];
-        if (raw) drawSeries(ctx, TL.pickLevel(raw, f.msPerPx), f, h, c.raw, false, RAW_GAP, 2);
+        if (raw) drawDots(ctx, raw[0], f, h, c.raw);
         drawSeries(ctx, level, f, h, c.line, false);
       } else drawThresholds(ctx, w, h);
     }
@@ -739,6 +739,20 @@ const TL = (() => {
   }
 
   // Line (fill=false) or area (fill=true) of a series level.
+  // One dot per real Metrics API point (level 0, never downsampled). Dots shrink when they would overlap.
+  function drawDots(ctx, level, f, h, color) {
+    const spacing = MIN / f.msPerPx;
+    const r = Math.max(1.2, Math.min(2.6, spacing / 2.5));
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    TL.forEachPoint(level.points, f.t0, f.t1, Infinity, (t, v) => {
+      const x = X(t), y = yOf(v, h);
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, 2 * Math.PI);
+    });
+    ctx.fill();
+  }
+
   function drawSeries(ctx, level, f, h, color, fill, minGap = SIGNAL_HOLD, width = 1.5) {
     const maxGap = Math.max(minGap, 2 * level.size);
     let startX = 0, lastX = 0, open = false;

@@ -6,7 +6,7 @@
   --tl-dim: color-mix(in srgb, var(--color-surface) 76%, transparent);
   --tl-edge: color-mix(in srgb, var(--color-text-muted) 14%, transparent);
   --tl-diff: light-dark(#c2185b, #f06292);
-  --tl-raw: light-dark(#b4009e, #ff7ae6);
+  --tl-raw: light-dark(#d4a900, #ffe600);
   --tl-n1: var(--color-accent);
   --tl-n2: light-dark(#8b3fd9, #b98bff);
   --tl-n3: light-dark(#0f8f80, #3fc9b5);
@@ -47,7 +47,7 @@
 .lg::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 2px; background: var(--c); margin-right: 5px; vertical-align: -2px; }
 .lg-bubble::before { background: var(--color-accent); border-radius: 3px 3px 3px 0; }
 .lg-line::before { width: 16px; height: 2px; border-radius: 0; vertical-align: 3px; }
-.lg-thin::before { height: 2px; }
+.lg-dot::before { width: 7px; height: 7px; border-radius: 50%; vertical-align: 1px; }
 .tl-app:has(#t-raw:not(:checked)) #lg-raw { display: none; }
 .empty { padding: var(--space-3) 0; }
 .tl-error { margin-top: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); white-space: pre-wrap; background: var(--color-unhealthy-bg); color: var(--color-unhealthy); }

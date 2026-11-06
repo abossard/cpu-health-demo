@@ -106,8 +106,6 @@ public static class Timeline
     /// <summary>Signal values are sent with 2 decimals; more carries no information for a CPU percentage.</summary>
     public static double? RoundValue(double? value) => value is { } v ? Math.Round(v, 2, MidpointRounding.AwayFromZero) : null;
 
-    public static double RoundTenth(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
-
     /// <summary>Metrics API path for 1-min average and maximum Percentage CPU of one resource over [from, to].</summary>
     public static string RawCpuPath(string resourceId, DateTimeOffset from, DateTimeOffset to) =>
         $"{resourceId}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M"
@@ -127,7 +125,7 @@ public static class Timeline
             if (Number(data, "average") is not { } average || !data.TryGetProperty("timeStamp", out var stamp)
                 || !DateTimeOffset.TryParse(stamp.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var t))
                 continue;
-            points.Add(new RawCpuPoint(t.ToUnixTimeMilliseconds(), RoundTenth(average), Number(data, "maximum") is { } max ? RoundTenth(max) : null));
+            points.Add(new RawCpuPoint(t.ToUnixTimeMilliseconds(), average, Number(data, "maximum")));
         }
         return points.OrderBy(p => p.T).ToList();
     }

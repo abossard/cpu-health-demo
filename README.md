@@ -104,7 +104,7 @@ Click **Timeline** in the header.
 | Zoomed in to one run: start and end markers, the CPU curve and the state bands | Overlay and highlight: all node CPU lines in one chart, agreement dimmed |
 
 - Each node has an entity state band, a signal band and a CPU chart with dashed lines at 90% and 98%.
-- **Raw 1-min CPU (Metrics API)**: a thin line with the node's 1-minute `Percentage CPU` from Azure Monitor Metrics, next to the 5-minute average the health model evaluates. It shows how long the average lags each step.
+- **Raw 1-min CPU (Metrics API)**: one gold dot per minute, every point unsampled, with the node's 1-minute `Percentage CPU` from Azure Monitor Metrics, next to the 5-minute average the health model evaluates. It shows how long the average lags each step.
 - Blue markers are annotations; close markers merge into a numbered bubble.
 - **Disagreement lane**: pink where the nodes are in different states.
 - **Highlight differences**: dims the time where all nodes agree.
