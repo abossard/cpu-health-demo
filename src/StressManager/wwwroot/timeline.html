@@ -40,6 +40,7 @@
         <label class="check"><input type="checkbox" id="t-lane"> Disagreement lane</label>
         <label class="check"><input type="checkbox" id="t-highlight"> Highlight differences</label>
         <label class="check"><input type="checkbox" id="t-overlay"> Overlay</label>
+        <label class="check"><input type="checkbox" id="t-raw"> Raw 1-min CPU (Metrics API)</label>
         <label class="check"><input type="checkbox" id="t-skew"> Onset skew table</label>
         <span class="hint muted small">Drag or flick to pan, wheel or pinch to zoom, Shift+drag for a range. Keys: + − ← → 0.</span>
       </div>
@@ -53,6 +54,8 @@
         <span class="lg" style="--c: var(--color-unknown)">Unknown</span>
         <span class="lg lg-bubble">Annotations</span>
         <span class="lg" style="--c: var(--tl-diff)">Nodes disagree</span>
+        <span class="lg lg-line" style="--c: var(--color-accent)">5-min average (health signal)</span>
+        <span class="lg lg-line lg-thin" id="lg-raw" style="--c: var(--tl-raw)">1-min average (Metrics API)</span>
       </div>
       <div id="rows" class="rows"></div>
       <div id="empty" class="muted empty">Loading…</div>

@@ -18,8 +18,9 @@ public sealed class HealthHistoryReader(ArmClient? arm, Settings settings)
         await foreach (var entity in model.GetHealthModelEntities().GetAllAsync(cancellationToken: ct))
         {
             var props = entity.Data.Properties;
-            var signals = props?.SignalGroups?.AzureResource?.Signals.Select(s => s.Name).ToList() ?? [];
-            entities.Add(new ModelEntity(entity.Id.Name, props?.DisplayName ?? entity.Id.Name, signals));
+            var resource = props?.SignalGroups?.AzureResource;
+            var signals = resource?.Signals.Select(s => s.Name).ToList() ?? [];
+            entities.Add(new ModelEntity(entity.Id.Name, props?.DisplayName ?? entity.Id.Name, signals, resource?.AzureResourceId?.ToString()));
         }
         var relationships = new List<Relationship>();
         await foreach (var rel in model.GetHealthModelRelationships().GetAllAsync(cancellationToken: ct))

@@ -59,6 +59,22 @@
   };
   const worst = states => states.includes(3) ? 3 : states.includes(2) ? 2 : states.includes(1) ? 1 : 0;
 
+  // Raw 1-min Percentage CPU like the Metrics API: [minute start, average, maximum], rounded to 0.1.
+  // A minute is published RAW_DELAY after it ends; deltas resend the last RAW_REFRESH because the newest minutes can change.
+  const RAW_DELAY = 2.5 * MIN, RAW_REFRESH = 5 * MIN, PER_MIN = MIN / STEP;
+  const round1 = v => Math.round(v * 10) / 10;
+  function rawMinute(n, m) {
+    let sum = 0, max = 0;
+    for (let j = 0; j < PER_MIN; j++) { const v = raw(n, m / STEP + j); sum += v; max = Math.max(max, v); }
+    return [m, round1(sum / PER_MIN), round1(Math.min(100, max + hash(n, 7, m / MIN) * 4))];
+  }
+  function rawSeries(n, since, now) {
+    const out = [];
+    const from = Math.max(Math.ceil((now - DAY) / MIN) * MIN, Number.isFinite(since) ? Math.floor((since - RAW_REFRESH) / MIN) * MIN : -Infinity);
+    for (let m = from; m + MIN + RAW_DELAY <= now; m += MIN) out.push(rawMinute(n, m));
+    return out;
+  }
+
   function build(since, now) {
     const last = Math.floor(now / STEP), first = Math.ceil((now - DAY) / STEP);
     const series = NODES.map((_, n) => { const a = []; for (let i = first; i <= last; i++) a.push(signalPoint(n, i)); return a; });
@@ -122,6 +138,7 @@
       entities: ENTITIES,
       entityStates,
       signals: NODES.map((name, n) => ({ entity: name, signal: 'average-cpu', points: series[n].filter(newer) })),
+      rawCpu: NODES.map((name, n) => ({ entity: name, points: rawSeries(n, since, now) })),
       annotations: annotations.filter(a => a.t > since),
       runs,
       disagreements,

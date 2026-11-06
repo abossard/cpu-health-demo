@@ -43,8 +43,8 @@ const TL = (() => {
   }
 
   const emptyStore = () => ({
-    v: 1, cursor: null, thresholds: { degraded: 90, unhealthy: 98 }, entities: [],
-    states: {}, signals: {}, annotations: {}, runs: [], disagreements: [],
+    v: 2, cursor: null, thresholds: { degraded: 90, unhealthy: 98 }, entities: [],
+    states: {}, signals: {}, rawCpu: {}, annotations: {}, runs: [], disagreements: [],
   });
 
   // Runs merge by runId (a delta carries only new or changed runs), sorted by start.
@@ -65,11 +65,14 @@ const TL = (() => {
       const key = `${s.entity}|${s.signal}`;
       signals[key] = { entity: s.entity, signal: s.signal, points: mergePoints(signals[key] && signals[key].points, s.points) };
     }
+    // Raw Metrics API minutes [t, avg, max]: same merge as signals, a later value for a minute replaces the earlier one.
+    const rawCpu = { ...store.rawCpu };
+    for (const r of d.rawCpu || []) rawCpu[r.entity] = mergePoints(rawCpu[r.entity], r.points);
     const annotations = { ...store.annotations };
     for (const a of d.annotations || []) annotations[a.id] = a;
     const cursor = !store.cursor || toMs(d.cursor) > toMs(store.cursor) ? d.cursor || store.cursor : store.cursor;
     return {
-      ...store, cursor, states, signals, annotations,
+      ...store, cursor, states, signals, rawCpu, annotations,
       thresholds: d.thresholds || store.thresholds,
       entities: Array.isArray(d.entities) ? d.entities : store.entities,
       runs: Array.isArray(d.runs) ? mergeRuns(store.runs, d.runs) : store.runs,
@@ -80,12 +83,13 @@ const TL = (() => {
   // Drop data older than minT; keeps the last point before minT so bands start filled.
   function prune(store, minT) {
     const keep = pts => { const i = indexAfter(pts, minT); return i > 1 ? pts.slice(i - 1) : pts; };
-    const states = {}, signals = {}, annotations = {};
+    const states = {}, signals = {}, rawCpu = {}, annotations = {};
     for (const [k, pts] of Object.entries(store.states)) states[k] = keep(pts);
+    for (const [k, pts] of Object.entries(store.rawCpu)) rawCpu[k] = keep(pts);
     for (const [k, s] of Object.entries(store.signals)) signals[k] = { ...s, points: keep(s.points) };
     for (const [k, a] of Object.entries(store.annotations)) if (a.t >= minT) annotations[k] = a;
     return {
-      ...store, states, signals, annotations,
+      ...store, states, signals, rawCpu, annotations,
       runs: store.runs.filter(r => r.startedAt >= minT),
       disagreements: store.disagreements.filter(iv => iv[1] >= minT),
     };
@@ -294,13 +298,17 @@ const TL = (() => {
     return end;
   }
 
-  // Every node's value and states at time t; entity states only up to end.
-  function snapshot(store, nodes, t, signalHold, end) {
+  // Every node's signal value, raw 1-min average and max, and states at time t; entity states only up to end.
+  function snapshot(store, nodes, t, signalHold, end, rawHold) {
     return nodes.map(n => {
       const key = signalKey(store.signals, n);
       const sp = key ? pointAt(store.signals[key].points, t, signalHold) : null;
+      const rp = pointAt(store.rawCpu[n], t, rawHold);
       const ep = t <= end ? pointAt(store.states[n], t) : null;
-      return { entity: n, value: sp ? sp[1] : null, signalState: sp ? sp[2] : null, entityState: ep ? ep[1] : null };
+      return {
+        entity: n, value: sp ? sp[1] : null, rawAvg: rp ? rp[1] : null, rawMax: rp ? rp[2] : null,
+        signalState: sp ? sp[2] : null, entityState: ep ? ep[1] : null,
+      };
     });
   }
 
@@ -315,6 +323,7 @@ const TL = (() => {
 (() => {
   const { MIN, HOUR } = TL;
   const RETAIN = 24 * HOUR, SIGNAL_HOLD = 5 * MIN, SKEW_FLAG_SEC = 120;
+  const RAW_HOLD = 2 * MIN, RAW_GAP = 3 * MIN; // raw points are 1 min apart; a missing minute keeps the line, 3 break it
   const MIN_SPAN = 2 * MIN, MAX_SPAN = RETAIN, EASE_MS = 70, TIP_MS = 100, KEY_ZOOM = 1.5, KEY_PAN = 0.2;
   const BUBBLE_W = 14, CLUSTER_PX = BUBBLE_W + 8; // markers cluster when the bubbles would be closer than 8 px
   const STATE_NAMES = ['Unknown', 'Healthy', 'Degraded', 'Unhealthy'];
@@ -335,7 +344,7 @@ const TL = (() => {
     live: true,
     view: { c: start0 - 1.5 * HOUR, s: 3 * HOUR, v: 0 }, // target
     disp: { t0: start0 - 3 * HOUR, t1: start0 },          // what is drawn, eased towards the target
-    toggles: { lane: true, highlight: false, overlay: false, skew: true },
+    toggles: { lane: true, highlight: false, overlay: false, skew: true, raw: true },
     pending: [], frame: 0, lastTs: 0, dirty: true, sizeDirty: true,
     rows: new Map(), rowSig: '', skewSig: '', ui: {},
     hover: null, gesture: null, pointers: new Map(), tipAt: 0,
@@ -448,9 +457,11 @@ const TL = (() => {
     const sigKey = {}, levels = {}, ann = {};
     for (const e of store.entities) sigKey[e.name] = TL.signalKey(store.signals, e.name);
     for (const [k, s] of Object.entries(store.signals)) levels[k] = TL.buildLevels(s.points);
+    const raw = {};
+    for (const [k, pts] of Object.entries(store.rawCpu)) raw[k] = TL.buildLevels(pts);
     for (const a of Object.values(store.annotations)) (ann[a.entity] = ann[a.entity] || []).push(a);
     for (const k of Object.keys(ann)) ann[k].sort((a, b) => a.t - b.t);
-    return { nodes, sigKey, levels, ann, end: TL.dataEnd(store) };
+    return { nodes, sigKey, levels, raw, ann, end: TL.dataEnd(store) };
   }
 
   /* ----- frame loop: merge queued deltas, step the view, draw once ----- */
@@ -523,6 +534,7 @@ const TL = (() => {
       shade: [null, null, v('--tl-shade-degraded'), v('--tl-shade-unhealthy')],
       line: v('--color-accent'), fill: v('--tl-fill'), grid: v('--color-border'), muted: v('--color-text-muted'), track: v('--color-surface-2'),
       bubble: v('--color-accent'), diff: v('--tl-diff'), dim: v('--tl-dim'), edge: v('--tl-edge'),
+      raw: v('--tl-raw'),
       series: [v('--tl-n1'), v('--tl-n2'), v('--tl-n3'), v('--tl-n4'), v('--tl-n5')],
     };
   }
@@ -647,6 +659,8 @@ const TL = (() => {
         drawSeries(ctx, level, f, h, null, true);
         drawStates(ctx, level.points, f, Math.max(SIGNAL_HOLD, level.size), w, h, true);
         drawThresholds(ctx, w, h);
+        const raw = app.toggles.raw && dv.raw[m.entity];
+        if (raw) drawSeries(ctx, TL.pickLevel(raw, f.msPerPx), f, h, c.raw, false, RAW_GAP, 1);
         drawSeries(ctx, level, f, h, c.line, false);
       } else drawThresholds(ctx, w, h);
     }
@@ -715,8 +729,8 @@ const TL = (() => {
   }
 
   // Line (fill=false) or area (fill=true) of a series level.
-  function drawSeries(ctx, level, f, h, color, fill) {
-    const maxGap = Math.max(SIGNAL_HOLD, 2 * level.size);
+  function drawSeries(ctx, level, f, h, color, fill, minGap = SIGNAL_HOLD, width = 1.5) {
+    const maxGap = Math.max(minGap, 2 * level.size);
     let startX = 0, lastX = 0, open = false;
     ctx.beginPath();
     TL.forEachPoint(level.points, f.t0, f.t1, maxGap, (t, v, fresh) => {
@@ -734,7 +748,7 @@ const TL = (() => {
       ctx.fillStyle = app.colors.fill;
       ctx.fill();
     } else {
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = width;
       ctx.lineJoin = 'round';
       ctx.strokeStyle = color;
       ctx.stroke();
@@ -884,11 +898,15 @@ const TL = (() => {
 
   function renderTooltip(t, cluster) {
     const tip = $('tooltip');
-    const rows = TL.snapshot(app.store, app.derived.nodes, t, SIGNAL_HOLD, app.derived.end);
+    const rows = TL.snapshot(app.store, app.derived.nodes, t, SIGNAL_HOLD, app.derived.end, RAW_HOLD);
+    const showRaw = app.toggles.raw;
+    const pct = v => (v == null ? '–' : `${v.toFixed(1)}%`);
     const parts = [el('div', 'tt-time', fmtClockSec(t))];
     const table = el('table');
     const head = el('tr');
-    head.append(el('th', null, 'Node'), el('th', 'num', 'CPU'), el('th', null, 'Signal'), el('th', null, 'Entity'));
+    head.append(el('th', null, 'Node'), el('th', 'num', '5-min'));
+    if (showRaw) head.append(el('th', 'num', '1-min avg / max'));
+    head.append(el('th', null, 'Signal'), el('th', null, 'Entity'));
     table.append(head);
     rows.forEach((r, i) => {
       const tr = el('tr');
@@ -896,7 +914,9 @@ const TL = (() => {
       name.style.setProperty('--c', `var(--tl-n${(i % 5) + 1})`);
       const sigTd = el('td'); sigTd.append(stateDot(r.signalState));
       const entTd = el('td'); entTd.append(stateDot(r.entityState));
-      tr.append(name, el('td', 'num', r.value == null ? '–' : `${r.value.toFixed(1)} %`), sigTd, entTd);
+      tr.append(name, el('td', 'num', pct(r.value)));
+      if (showRaw) tr.append(el('td', 'num tt-raw', r.rawAvg == null ? '–' : `${pct(r.rawAvg)} / ${pct(r.rawMax)}`));
+      tr.append(sigTd, entTd);
       table.append(tr);
     });
     parts.push(table);
@@ -1117,7 +1137,7 @@ const TL = (() => {
     wire();
     renderStatus();
     const cached = await cacheLoad();
-    if (cached && cached.v === 1) {
+    if (cached && cached.v === TL.emptyStore().v) {
       app.store = TL.prune(cached, Date.now() - RETAIN);
       app.derived = derive(app.store);
       setConn('cached');

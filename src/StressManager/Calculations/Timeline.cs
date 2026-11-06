@@ -1,9 +1,10 @@
 using System.Globalization;
+using System.Text.Json;
 
 namespace StressManager.Calculations;
 
 /// <summary>An entity as read from ARM, before kind and parent are derived.</summary>
-public sealed record ModelEntity(string Name, string DisplayName, IReadOnlyList<string> Signals);
+public sealed record ModelEntity(string Name, string DisplayName, IReadOnlyList<string> Signals, string? AzureResourceId = null);
 
 /// <summary>An entity row of the timeline (docs/aks/timeline.md). Kind: root, flow or node.</summary>
 public sealed record TimelineEntity(string Name, string DisplayName, string Kind, string? Parent);
@@ -13,6 +14,9 @@ public readonly record struct StatePoint(long T, int State);
 public readonly record struct SignalPoint(long T, double? Value, int State);
 
 public readonly record struct SeriesKey(string Entity, string Signal);
+
+/// <summary>One minute of raw Percentage CPU from the Metrics API; T is the minute start.</summary>
+public readonly record struct RawCpuPoint(long T, double Average, double? Maximum);
 
 public sealed record TimelineAnnotation(
     string Entity, string Id, long T, string Phase, string RunId, int? Minutes, int? Load, string Source, string Description);
@@ -27,7 +31,11 @@ public sealed record TimelineData(
     public static readonly TimelineData Empty = new([], new Dictionary<string, IReadOnlyList<StatePoint>>(),
         new Dictionary<SeriesKey, IReadOnlyList<SignalPoint>>(), []);
 
-    public bool HasPoints => States.Values.Any(s => s.Count > 0) || Signals.Values.Any(s => s.Count > 0) || Annotations.Count > 0;
+    /// <summary>Raw 1-min CPU per node entity. Read on its own 60 s cadence, so a refresh may carry none.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<RawCpuPoint>> RawCpu { get; init; } = new Dictionary<string, IReadOnlyList<RawCpuPoint>>();
+
+    public bool HasPoints => States.Values.Any(s => s.Count > 0) || Signals.Values.Any(s => s.Count > 0) || Annotations.Count > 0
+        || RawCpu.Values.Any(s => s.Count > 0);
 }
 
 public sealed record RunNodeOnset(string Entity, long? DegradedAt, long? UnhealthyAt, long? RecoveredAt);
@@ -48,6 +56,9 @@ public sealed record EntityStates(string Entity, IReadOnlyList<long[]> Points);
 /// <summary>Points are [t, value, state]; value may be null.</summary>
 public sealed record SignalSeries(string Entity, string Signal, IReadOnlyList<object?[]> Points);
 
+/// <summary>Points are [t, average, maximum]; maximum may be null.</summary>
+public sealed record RawCpuSeries(string Entity, IReadOnlyList<object?[]> Points);
+
 /// <summary>
 /// Response of GET /api/timeline and of the SSE delta event (docs/aks/timeline.md, API).
 /// In a delta, Runs holds only new or changed runs and is null when none changed; Disagreements is null when unchanged.
@@ -58,6 +69,7 @@ public sealed record TimelineResponse(
     IReadOnlyList<TimelineEntity> Entities,
     IReadOnlyList<EntityStates> EntityStates,
     IReadOnlyList<SignalSeries> Signals,
+    IReadOnlyList<RawCpuSeries> RawCpu,
     IReadOnlyList<TimelineAnnotation> Annotations,
     IReadOnlyList<RunOnset>? Runs,
     IReadOnlyList<long[]>? Disagreements);
@@ -73,6 +85,9 @@ public static class Timeline
 
     /// <summary>Re-read window before the last seen point; absorbs late points (T3).</summary>
     public static readonly TimeSpan Overlap = TimeSpan.FromMinutes(2);
+
+    /// <summary>Re-read window for raw CPU: the Metrics API fills and revises the newest minutes late.</summary>
+    public static readonly TimeSpan RawCpuOverlap = TimeSpan.FromMinutes(5);
 
     /// <summary>A node state older than this at a grid minute counts as missing, not as a state.</summary>
     public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
@@ -90,6 +105,37 @@ public static class Timeline
 
     /// <summary>Signal values are sent with 2 decimals; more carries no information for a CPU percentage.</summary>
     public static double? RoundValue(double? value) => value is { } v ? Math.Round(v, 2, MidpointRounding.AwayFromZero) : null;
+
+    public static double RoundTenth(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
+
+    /// <summary>Metrics API path for 1-min average and maximum Percentage CPU of one resource over [from, to].</summary>
+    public static string RawCpuPath(string resourceId, DateTimeOffset from, DateTimeOffset to) =>
+        $"{resourceId}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M"
+        + $"&aggregation=Average,Maximum&timespan={Iso(from)}/{Iso(to)}";
+
+    /// <summary>Points of a Metrics API response (value[].timeseries[].data[]). Minutes without an average are skipped.</summary>
+    public static IReadOnlyList<RawCpuPoint> ParseRawCpu(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var points = new List<RawCpuPoint>();
+        if (!doc.RootElement.TryGetProperty("value", out var metrics))
+            return points;
+        foreach (var data in metrics.EnumerateArray()
+                     .SelectMany(m => m.TryGetProperty("timeseries", out var ts) ? ts.EnumerateArray() : Enumerable.Empty<JsonElement>())
+                     .SelectMany(ts => ts.TryGetProperty("data", out var d) ? d.EnumerateArray() : Enumerable.Empty<JsonElement>()))
+        {
+            if (Number(data, "average") is not { } average || !data.TryGetProperty("timeStamp", out var stamp)
+                || !DateTimeOffset.TryParse(stamp.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var t))
+                continue;
+            points.Add(new RawCpuPoint(t.ToUnixTimeMilliseconds(), RoundTenth(average), Number(data, "maximum") is { } max ? RoundTenth(max) : null));
+        }
+        return points.OrderBy(p => p.T).ToList();
+    }
+
+    private static double? Number(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+
+    private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
     /// <summary>Kind and parent from the relationships, ordered root, flow, then nodes by name.</summary>
     public static IReadOnlyList<TimelineEntity> Entities(IEnumerable<ModelEntity> entities, IEnumerable<Relationship> relationships)
@@ -110,12 +156,12 @@ public static class Timeline
     }
 
     /// <summary>Start of the next read for one series: last seen minus the overlap, never before the retention window.</summary>
-    public static DateTimeOffset FetchFrom(long? lastSeen, DateTimeOffset now)
+    public static DateTimeOffset FetchFrom(long? lastSeen, DateTimeOffset now, TimeSpan? overlap = null)
     {
         var floor = now - Retention;
         if (lastSeen is not { } t)
             return floor;
-        var from = DateTimeOffset.FromUnixTimeMilliseconds(t) - Overlap;
+        var from = DateTimeOffset.FromUnixTimeMilliseconds(t) - (overlap ?? Overlap);
         return from > floor ? from : floor;
     }
 
@@ -124,6 +170,9 @@ public static class Timeline
 
     public static long? LastSignalAt(TimelineData data, SeriesKey key) =>
         data.Signals.TryGetValue(key, out var s) && s.Count > 0 ? s[^1].T : null;
+
+    public static long? LastRawCpuAt(TimelineData data, string entity) =>
+        data.RawCpu.TryGetValue(entity, out var s) && s.Count > 0 ? s[^1].T : null;
 
     public static long? LastAnnotationAt(TimelineData data, string entity) =>
         data.Annotations.Where(a => a.Entity == entity).Select(a => (long?)a.T).Max();
@@ -159,13 +208,24 @@ public static class Timeline
                 addedSignals[key] = added;
         }
 
+        var rawCpu = new Dictionary<string, IReadOnlyList<RawCpuPoint>>(StringComparer.Ordinal);
+        var addedRawCpu = new Dictionary<string, IReadOnlyList<RawCpuPoint>>(StringComparer.Ordinal);
+        foreach (var entity in cache.RawCpu.Keys.Concat(incoming.RawCpu.Keys).Where(names.Contains).Distinct())
+        {
+            var (merged, added) = MergeByKey(cache.RawCpu.GetValueOrDefault(entity) ?? [],
+                incoming.RawCpu.GetValueOrDefault(entity) ?? [], p => p.T, p => p.T);
+            rawCpu[entity] = merged;
+            if (added.Count > 0)
+                addedRawCpu[entity] = added;
+        }
+
         var (annotations, addedAnnotations) = MergeByKey(
             cache.Annotations.Where(a => names.Contains(a.Entity)).ToList(),
             incoming.Annotations.Where(a => names.Contains(a.Entity)),
             a => (a.Entity, a.Id), a => a.T);
 
-        return (new TimelineData(incoming.Entities, states, signals, annotations),
-            new TimelineData(incoming.Entities, addedStates, addedSignals, addedAnnotations));
+        return (new TimelineData(incoming.Entities, states, signals, annotations) { RawCpu = rawCpu },
+            new TimelineData(incoming.Entities, addedStates, addedSignals, addedAnnotations) { RawCpu = addedRawCpu });
     }
 
     /// <summary>Drops every point older than the cutoff.</summary>
@@ -173,6 +233,7 @@ public static class Timeline
     {
         States = data.States.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<StatePoint>)kv.Value.Where(p => p.T >= cutoff).ToList(), StringComparer.Ordinal),
         Signals = data.Signals.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<SignalPoint>)kv.Value.Where(p => p.T >= cutoff).ToList()),
+        RawCpu = data.RawCpu.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<RawCpuPoint>)kv.Value.Where(p => p.T >= cutoff).ToList(), StringComparer.Ordinal),
         Annotations = data.Annotations.Where(a => a.T >= cutoff).ToList(),
     };
 
@@ -181,20 +242,28 @@ public static class Timeline
     {
         States = data.States.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<StatePoint>)kv.Value.Where(p => p.T > s).ToList(), StringComparer.Ordinal),
         Signals = data.Signals.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<SignalPoint>)kv.Value.Where(p => p.T > s).ToList()),
+        RawCpu = data.RawCpu.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<RawCpuPoint>)kv.Value.Where(p => p.T > s).ToList(), StringComparer.Ordinal),
         Annotations = data.Annotations.Where(a => a.T > s).ToList(),
     };
 
     /// <summary>
-    /// The next since for a client: the newest cached point minus the overlap, so points that arrive late for a lagging
-    /// series are sent again. Clients merge by key. Fallback when nothing is cached.
+    /// The next since for a client: the newest cached point minus its overlap, so late or revised points are sent again.
+    /// Raw CPU uses its 5-min overlap; the earlier of the two cursors wins. Clients merge by key. Fallback when nothing is cached.
     /// </summary>
     public static long Cursor(TimelineData data, long fallback)
     {
-        var times = data.States.Values.SelectMany(s => s.Select(p => p.T))
+        var health = data.States.Values.SelectMany(s => s.Select(p => p.T))
             .Concat(data.Signals.Values.SelectMany(s => s.Select(p => p.T)))
             .Concat(data.Annotations.Select(a => a.T))
-            .ToList();
-        return times.Count == 0 ? fallback : times.Max() - (long)Overlap.TotalMilliseconds;
+            .Select(t => (long?)t).Max() - (long)Overlap.TotalMilliseconds;
+        var raw = data.RawCpu.Values.SelectMany(s => s.Select(p => (long?)p.T)).Max() - (long)RawCpuOverlap.TotalMilliseconds;
+        return (health, raw) switch
+        {
+            ({ } h, { } r) => Math.Min(h, r),
+            ({ } h, null) => h,
+            (null, { } r) => r,
+            _ => fallback,
+        };
     }
 
     public static string FormatCursor(long t) =>
@@ -324,6 +393,10 @@ public static class Timeline
                 .OrderBy(kv => Rank(kv.Key.Entity)).ThenBy(kv => kv.Key.Entity, StringComparer.Ordinal).ThenBy(kv => kv.Key.Signal, StringComparer.Ordinal)
                 .Select(kv => new SignalSeries(kv.Key.Entity, kv.Key.Signal,
                     kv.Value.Select(p => new object?[] { p.T, p.Value, p.State }).ToList()))
+                .ToList(),
+            slice.RawCpu.Where(kv => kv.Value.Count > 0)
+                .OrderBy(kv => Rank(kv.Key)).ThenBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => new RawCpuSeries(kv.Key, kv.Value.Select(p => new object?[] { p.T, p.Average, p.Maximum }).ToList()))
                 .ToList(),
             slice.Annotations,
             snapshot.Runs,

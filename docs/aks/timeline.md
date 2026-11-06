@@ -54,3 +54,16 @@ A stress-manager page that redraws the portal's entity/signal timeline for all e
   - Overlay: one chart with all node CPU lines in distinct colours, plus the thresholds.
   - Onset skew table: per run, the start time, each node's time to Degraded and to Unhealthy (seconds after the run start), and the spread. A spread over 120 s is flagged.
 - Drag to zoom on the time axis; double-click resets. Must work at phone width (rows stack, the chart width follows the viewport) and in light and dark mode.
+
+## Raw CPU from the Azure Monitor Metrics API
+
+The health model signal is a 5-minute average. The timeline also shows the raw 1-minute `Percentage CPU` of each node's VMSS instance, so the averaging delay is visible.
+
+- Source: `GET https://management.azure.com{resourceId}/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M&aggregation=Average,Maximum&timespan={from}/{to}`, called with the manager identity (Reader on the node resource group covers `Microsoft.Insights/metrics/read`). `resourceId` is the node entity's `azureResourceId`.
+- The cache refreshes every 60 s from `lastSeen - 5 min`, because the newest minutes arrive late and can change. Points with a null average are skipped. A later value for the same minute replaces the earlier one. Backfill and retention: 24 h.
+- Response field `rawCpu`: `[{ "entity": "...", "points": [[t, average, maximum]] }]`, values rounded to 0.1. It follows the same `since` delta rules as `signals`. SSE deltas include it.
+- Page:
+  - each node chart draws the raw average as a thin line next to the 5-min signal, toggled by "Raw 1-min CPU (Metrics API)" (on by default)
+  - the legend names both lines
+  - the crosshair tooltip lists raw average and max per node
+  - Overlay mode keeps showing the signal lines only

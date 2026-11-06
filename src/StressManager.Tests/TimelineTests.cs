@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using StressManager.Calculations;
 
@@ -162,14 +163,15 @@ public class TimelineTests
                 [new SeriesKey("a", "average-cpu")] = times.Select(m => new SignalPoint(At(m), 5, 1)).ToList(),
             },
             Annotations = times.Select(m => Annotation("a", $"id{m}", m)).ToList(),
+            RawCpu = new Dictionary<string, IReadOnlyList<RawCpuPoint>> { ["a"] = times.Select(m => new RawCpuPoint(At(m), 5, 6)).ToList() },
         };
     }
 
-    private static (string States, string Signals, string Annotations) Minutes(TimelineData data)
+    private static (string States, string Signals, string RawCpu, string Annotations) Minutes(TimelineData data)
     {
         string Join(IEnumerable<long> times) => string.Join(" ", times.Select(t => (t - T0Ms) / 60_000));
         return (Join(data.States["a"].Select(p => p.T)), Join(data.Signals[new SeriesKey("a", "average-cpu")].Select(p => p.T)),
-            Join(data.Annotations.Select(a => a.T)));
+            Join(data.RawCpu["a"].Select(p => p.T)), Join(data.Annotations.Select(a => a.T)));
     }
 
     [Theory]
@@ -177,7 +179,7 @@ public class TimelineTests
     [InlineData("0 1 2", 1, "1 2")]
     [InlineData("0 1 2", 3, "")]
     public void Prune_DropsPointsOlderThanCutoff(string minutes, int cutoffMinute, string expected) =>
-        Assert.Equal((expected, expected, expected), Minutes(Timeline.Prune(AllKinds(minutes), At(cutoffMinute))));
+        Assert.Equal((expected, expected, expected, expected), Minutes(Timeline.Prune(AllKinds(minutes), At(cutoffMinute))));
 
     [Theory]
     [InlineData("0 1 2", null, "0 1 2")]
@@ -190,16 +192,85 @@ public class TimelineTests
 
         var slice = Timeline.Since(data, sinceMinute is { } m ? At(m) : null);
 
-        Assert.Equal((expected, expected, expected), Minutes(slice));
+        Assert.Equal((expected, expected, expected, expected), Minutes(slice));
         Assert.Equal(data.Entities, slice.Entities);
     }
 
     [Theory]
-    [InlineData("", 100)]
-    [InlineData("0", -2)]
-    [InlineData("3 10 7", 8)]
-    public void Cursor_IsNewestPointMinusOverlap(string minutes, int expectedMinute) =>
-        Assert.Equal(At(expectedMinute), Timeline.Cursor(AllKinds(minutes), At(100)));
+    [InlineData("", "", 100)]
+    [InlineData("0", "", -2)]
+    [InlineData("3 10 7", "", 8)]
+    [InlineData("", "10", 5)]
+    [InlineData("10", "10", 5)]
+    [InlineData("10", "20", 8)]
+    public void Cursor_IsNewestPointMinusOverlapEarliestWins(string healthMinutes, string rawMinutes, int expectedMinute)
+    {
+        var data = AllKinds(healthMinutes) with { RawCpu = AllKinds(rawMinutes).RawCpu };
+
+        Assert.Equal(At(expectedMinute), Timeline.Cursor(data, At(100)));
+    }
+
+    [Theory]
+    [InlineData(null, 1440)]
+    [InlineData(10, 15)]
+    [InlineData(0, 5)]
+    [InlineData(1437, 1440)]
+    public void FetchFrom_RawCpuUsesFiveMinuteOverlap(int? lastSeenMinutesAgo, int expectedMinutesAgo)
+    {
+        var now = T0.AddDays(1);
+        long? lastSeen = lastSeenMinutesAgo is { } m ? now.AddMinutes(-m).ToUnixTimeMilliseconds() : null;
+
+        Assert.Equal(now.AddMinutes(-expectedMinutesAgo), Timeline.FetchFrom(lastSeen, now, Timeline.RawCpuOverlap));
+    }
+
+    [Theory]
+    // cached / incoming raw CPU as "minute=average/maximum"; a later read of the same minute replaces the earlier value.
+    [InlineData("", "0=4.1/4.3 1=50/99.6", "0=4.1/4.3 1=50/99.6", "0=4.1/4.3 1=50/99.6")]
+    [InlineData("0=4.1/4.3 1=71.7/99.6", "1=99.6/99.6 2=98.6/99.6", "0=4.1/4.3 1=99.6/99.6 2=98.6/99.6", "1=99.6/99.6 2=98.6/99.6")]
+    [InlineData("0=4.1/4.3 1=50/99.6", "1=50/99.6", "0=4.1/4.3 1=50/99.6", "")]
+    [InlineData("0=4.1/4.3", "", "0=4.1/4.3", "")]
+    public void Merge_RawCpuLateValuesReplace(string cached, string incoming, string merged, string added)
+    {
+        TimelineData Data(string notation) => TimelineData.Empty with
+        {
+            Entities = Nodes("a"),
+            RawCpu = notation.Length == 0
+                ? new Dictionary<string, IReadOnlyList<RawCpuPoint>>()
+                : new Dictionary<string, IReadOnlyList<RawCpuPoint>> { ["a"] = RawPoints(notation) },
+        };
+
+        var result = Timeline.Merge(Data(cached), Data(incoming));
+
+        Assert.Equal(merged, RawNotation(result.Merged.RawCpu["a"]));
+        Assert.Equal(added, RawNotation(result.Added.RawCpu.GetValueOrDefault("a") ?? []));
+    }
+
+    private static List<RawCpuPoint> RawPoints(string notation) =>
+        notation.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Split('=', '/'))
+            .Select(p => new RawCpuPoint(At(int.Parse(p[0])), double.Parse(p[1], CultureInfo.InvariantCulture),
+                p[2] == "-" ? null : double.Parse(p[2], CultureInfo.InvariantCulture)))
+            .ToList();
+
+    private static string RawNotation(IEnumerable<RawCpuPoint> points) =>
+        string.Join(" ", points.Select(p => FormattableString.Invariant($"{(p.T - T0Ms) / 60_000}={p.Average}/{(p.Maximum is { } m ? m : "-")}")));
+
+    [Theory]
+    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:01:00Z","average":71.715,"maximum":99.6},{"timeStamp":"2026-11-05T20:00:00Z","average":4.135,"maximum":4.34}]}]}]}""", "0=4.1/4.3 1=71.7/99.6")]
+    [InlineData("""{"value":[{"timeseries":[{"data":[{"timeStamp":"2026-11-05T20:00:00Z"},{"timeStamp":"2026-11-05T20:01:00Z","average":98.58}]}]}]}""", "1=98.6/-")]
+    [InlineData("""{"value":[{"timeseries":[]}]}""", "")]
+    [InlineData("""{"value":[]}""", "")]
+    [InlineData("""{}""", "")]
+    public void ParseRawCpu_SkipsNullAveragesAndRoundsToTenth(string json, string expected) =>
+        Assert.Equal(expected, RawNotation(Timeline.ParseRawCpu(json)));
+
+    [Theory]
+    [InlineData("/subscriptions/s/resourceGroups/mc/providers/Microsoft.Compute/virtualMachineScaleSets/v/virtualMachines/0", 0, 1440,
+        "/subscriptions/s/resourceGroups/mc/providers/Microsoft.Compute/virtualMachineScaleSets/v/virtualMachines/0/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M&aggregation=Average,Maximum&timespan=2026-11-05T20:00:00Z/2026-11-06T20:00:00Z")]
+    [InlineData("/r", 5, 10,
+        "/r/providers/Microsoft.Insights/metrics?api-version=2023-10-01&metricnames=Percentage%20CPU&interval=PT1M&aggregation=Average,Maximum&timespan=2026-11-05T20:05:00Z/2026-11-05T20:10:00Z")]
+    public void RawCpuPath_MatchesMetricsApiContract(string resourceId, int fromMinute, int toMinute, string expected) =>
+        Assert.Equal(expected, Timeline.RawCpuPath(resourceId, T0.AddMinutes(fromMinute), T0.AddMinutes(toMinute)));
 
     [Theory]
     [InlineData(null, true, null)]
@@ -294,6 +365,7 @@ public class TimelineTests
                 [new SeriesKey("n1", "average-cpu")] = [new SignalPoint(At(0), 4.5, 1), new SignalPoint(At(1), null, 0)],
             },
             Annotations = [Annotation("n1", "x", 0), Annotation("n1", "y", 1, Annotations.End)],
+            RawCpu = new Dictionary<string, IReadOnlyList<RawCpuPoint>> { ["n1"] = [new RawCpuPoint(At(0), 4.1, 4.3), new RawCpuPoint(At(1), 99.6, null)] },
         };
         var snapshot = Timeline.Analyse(data, At(2));
 
@@ -302,9 +374,9 @@ public class TimelineTests
         var root = json.RootElement;
 
         Assert.Equal(
-            ["cursor", "thresholds", "entities", "entityStates", "signals", "annotations", "runs", "disagreements"],
+            ["cursor", "thresholds", "entities", "entityStates", "signals", "rawCpu", "annotations", "runs", "disagreements"],
             root.EnumerateObject().Select(p => p.Name));
-        Assert.Equal("2026-11-05T19:59:00.000Z", root.GetProperty("cursor").GetString());
+        Assert.Equal("2026-11-05T19:56:00.000Z", root.GetProperty("cursor").GetString());
         Assert.Equal("""{"degraded":90,"unhealthy":98}""", root.GetProperty("thresholds").GetRawText());
         Assert.Equal("""{"name":"hm","displayName":"hm","kind":"root","parent":null}""", root.GetProperty("entities")[0].GetRawText());
         Assert.Equal(expectedPoints, root.GetProperty("annotations").GetArrayLength());
@@ -312,11 +384,14 @@ public class TimelineTests
         {
             Assert.Equal(0, root.GetProperty("entityStates").GetArrayLength());
             Assert.Equal(0, root.GetProperty("signals").GetArrayLength());
+            Assert.Equal(0, root.GetProperty("rawCpu").GetArrayLength());
             return;
         }
         Assert.Equal(["hm", "n1"], root.GetProperty("entityStates").EnumerateArray().Select(e => e.GetProperty("entity").GetString()));
         Assert.Equal($"[{At(1)},3]", root.GetProperty("entityStates")[0].GetProperty("points")[expectedPoints - 1].GetRawText());
         Assert.Equal($"[{At(1)},null,0]", root.GetProperty("signals")[0].GetProperty("points")[expectedPoints - 1].GetRawText());
+        Assert.Equal("n1", root.GetProperty("rawCpu")[0].GetProperty("entity").GetString());
+        Assert.Equal($"[{At(1)},99.6,null]", root.GetProperty("rawCpu")[0].GetProperty("points")[expectedPoints - 1].GetRawText());
         Assert.Equal(
             $$"""{"entity":"n1","id":"y","t":{{At(1)}},"phase":"end","runId":"r1","minutes":5,"load":100,"source":"rhythm:0","description":"Stress test"}""",
             root.GetProperty("annotations")[expectedPoints - 1].GetRawText());

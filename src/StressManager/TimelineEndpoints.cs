@@ -20,6 +20,7 @@ public static class TimelineEndpoints
             var settings = sp.GetRequiredService<Settings>();
             return new HealthHistoryReader(ArmClients.ClientOrNull(settings), settings);
         });
+        services.AddSingleton(sp => RawCpuReader.Create(sp.GetRequiredService<Settings>()));
         services.AddSingleton<TimelineCache>();
         services.AddHostedService<TimelineRefresher>();
         services.AddResponseCompression(o =>
