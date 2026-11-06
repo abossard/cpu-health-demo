@@ -1,3 +1,5 @@
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using k8s;
 using StressManager;
 using StressManager.Actions;
@@ -40,6 +42,21 @@ builder.Services.AddHostedService<HealthModelReconciler>();
 builder.Services.AddHostedService<RhythmReconciler>();
 builder.Services.AddHostedService<EndAnnotationBackstop>();
 builder.Services.AddTimeline();
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.OnRejected = (ctx, _) =>
+    {
+        ctx.HttpContext.Response.Redirect($"{AccessGate.LoginPage}?limit=1");
+        return ValueTask.CompletedTask;
+    };
+    // Behind the ingress every request comes from nginx, so partition by the forwarded client address.
+    o.AddPolicy("login", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Request.Headers["X-Forwarded-For"].ToString().Split(',')[0].Trim() is { Length: > 0 } ip ? ip : ctx.Connection.RemoteIpAddress?.ToString() ?? "",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+});
+
+var accessCode = Environment.GetEnvironmentVariable(AccessGate.CodeVariable) is { Length: > 0 } code ? code : null;
 
 var app = builder.Build();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("StressManager");
@@ -71,6 +88,48 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new { error = ex.Message });
     }
 });
+
+if (accessCode is null)
+    log.LogWarning("config: {Variable} not set, the site is open", AccessGate.CodeVariable);
+else
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path.Value ?? "/";
+        if (AccessGate.IsPublic(path) || AccessGate.TokenMatches(context.Request.Cookies[AccessGate.CookieName], accessCode))
+        {
+            await next(context);
+            return;
+        }
+        if (AccessGate.IsApi(path))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "access code required" });
+            return;
+        }
+        context.Response.Redirect($"{AccessGate.LoginPage}?next={Uri.EscapeDataString(path + context.Request.QueryString)}");
+    });
+
+app.UseRateLimiter();
+
+app.MapPost(AccessGate.LoginEndpoint, async (HttpContext context) =>
+{
+    var form = await context.Request.ReadFormAsync();
+    var target = AccessGate.SafeNext(form["next"]);
+    if (accessCode is null || !AccessGate.CodeMatches(form["code"], accessCode))
+    {
+        log.LogWarning("http: login failed");
+        return Results.Redirect($"{AccessGate.LoginPage}?error=1&next={Uri.EscapeDataString(target)}");
+    }
+    context.Response.Cookies.Append(AccessGate.CookieName, AccessGate.Token(accessCode), new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Strict,
+        Secure = context.Request.IsHttps,
+        MaxAge = TimeSpan.FromDays(30),
+        Path = "/",
+    });
+    return Results.Redirect(target);
+}).RequireRateLimiting("login").DisableAntiforgery();
 
 app.UseResponseCompression();
 app.UseDefaultFiles();

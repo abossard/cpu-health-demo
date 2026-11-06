@@ -9,7 +9,7 @@
 | D1 | `azd up` from the repo root. `azure.yaml` sets `infra.path: infra/aks`. Resource group `rg-${AZURE_ENV_NAME}`, Sweden Central. |
 | D2 | AKS with Node Auto Provisioning, one `Standard_B2s_v2` system node, node surge for upgrades. Node OS upgrades run Sundays 03:00-07:00 UTC. |
 | D3 | Fixed pool `stress`: 3x `Standard_D2s_v5`, no autoscale, label and taint `workload=stress` (`NoSchedule`). |
-| D4 | Public ingress via the app routing add-on (`webapprouting.kubernetes.azure.com`). The UI has no sign-in. |
+| D4 | Public ingress via the app routing add-on (`webapprouting.kubernetes.azure.com`), plain HTTP. Every page and API except `/healthz`, `/login.html` and `app.css` needs the access code from `STRESS_ACCESS_CODE` (azd env, stored as Secret `stress-manager-access`). `POST /login` sets an HttpOnly, SameSite=Strict cookie holding an HMAC of the code, valid 30 days and invalid once the code changes, and allows 10 attempts per minute per client. |
 | D5 | Microsoft Entra ID with Azure RBAC on the cluster; local accounts are disabled. |
 | D6 | Two user-assigned identities. The manager identity runs the manager pod and is the health model's identity. The runner identity is only used by the annotator sidecar to write annotations. |
 | D7 | One ASP.NET Core app `stress-manager` (.NET 10) serves the UI, manages the rhythm and builds the health model with `Azure.ResourceManager.CloudHealth` 1.0.0 (API 2026-11-01). |
@@ -113,6 +113,7 @@ A rhythm is an ordered list of steps `{minutes, load}`. Load 1-100 is ON and 0 i
 | GET | `/` | UI: rhythm editor and preview, active run, live node CPU. |
 | GET | `/timeline.html` | Health timeline, see `timeline.md`. |
 | GET | `/healthz` | 200 |
+| POST | `/login` | Form `code`, `next`. Sets the access cookie and redirects to `next` (same-site paths only). |
 | GET | `/api/rhythm` | `{state, steps, cycleMinutes, paddedMinutes, cronJobs[{name, cron, step, minutes, load, suspended}], nextOn{at, step}, signal{timeGrain, degraded, unhealthy}}` |
 | POST | `/api/rhythm/preview` | Body `{steps}`. Same shape with `state: "preview"`. Writes nothing. |
 | PUT | `/api/rhythm` | Body `{steps}`. Applies the rhythm and returns the GET shape. |

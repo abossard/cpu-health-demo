@@ -39,6 +39,11 @@ spec:
             - name: http
               containerPort: 8080
           env:
+            - name: STRESS_ACCESS_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: stress-manager-access
+                  key: code
             - name: AZURE_SUBSCRIPTION_ID
               value: "{{ .Env.AZURE_SUBSCRIPTION_ID }}"
             - name: AZURE_RESOURCE_GROUP
