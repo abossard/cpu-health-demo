@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEFAULT_SUBSCRIPTION="6fc552c5-06b6-43d7-ac70-2f1eda1be033"
-readonly DEFAULT_TENANT="46693104-8c42-47b7-98e3-985ed39402f6"
+# Subscription and tenant come from the environment or, for unset keys, from the repo's .env (see .env.example).
+load_env_file() {
+    local file="$1" key value
+    [[ -f "$file" ]] || return 0
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+        [[ -n "${!key:-}" ]] || export "$key=${value//\"/}"
+    done < "$file"
+}
+load_env_file "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
+
+readonly DEFAULT_SUBSCRIPTION="${AZURE_SUBSCRIPTION_ID:-}"
+readonly DEFAULT_TENANT="${AZURE_TENANT_ID:-}"
 readonly DEFAULT_RESOURCE_GROUP="rg-cpu-health-demo"
 readonly HEALTH_MODEL_NAME="cpu-health-demo"
 readonly API_VERSION="2026-11-01"
@@ -50,6 +61,11 @@ while (($#)); do
             ;;
     esac
 done
+
+if [[ -z "$subscription" || -z "$DEFAULT_TENANT" ]]; then
+    printf 'Set AZURE_SUBSCRIPTION_ID and AZURE_TENANT_ID in the environment or in .env (see .env.example).\n' >&2
+    exit 2
+fi
 
 account_json="$(az account show --subscription "$subscription" --output json)"
 python3 -c '

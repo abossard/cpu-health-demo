@@ -10,7 +10,7 @@
 
 | Model Name | Purpose and platform/workload role | Owner and team/organizational/legal boundary | Tenant, subscription and resource scope | Sources or gap | Status |
 |---|---|---|---|---|---|
-| `M_CPU_DEMO` / `cpu-health-demo` | Show CPU pressure for the three demo VMs | Local demo project; organizational owner unknown | Tenant `46693104-8c42-47b7-98e3-985ed39402f6`; subscription `6fc552c5-06b6-43d7-ac70-2f1eda1be033`; `rg-cpu-health-demo`, Sweden Central | S1, S2, S8, S11, S14 | Deployed and evaluating |
+| `M_CPU_DEMO` / `cpu-health-demo` | Show CPU pressure for the three demo VMs | Local demo project; organizational owner unknown | Tenant `<AZURE_TENANT_ID>`; subscription `<AZURE_SUBSCRIPTION_ID>`; `rg-cpu-health-demo`, Sweden Central | S1, S2, S8, S11, S14 | Deployed and evaluating |
 
 ## High-level health model diagram
 
@@ -104,7 +104,7 @@ flowchart TB
 ### S7: Azure scope and provider lookup
 
 - Evidence class: observed read-only Azure lookup
-- Original location/reference: Azure MCP health-model list and `az provider show`, subscription `6fc552c5-06b6-43d7-ac70-2f1eda1be033`
+- Original location/reference: Azure MCP health-model list and `az provider show`, subscription `<AZURE_SUBSCRIPTION_ID>`
 - Precise locator and version: `Microsoft.CloudHealth` is registered and lists Sweden Central; no model or resource group for this demo existed at lookup time
 - Status: new
 
@@ -118,7 +118,7 @@ flowchart TB
 ### S9: Read-only deployment preflight
 
 - Evidence class: observed Azure CLI preflight and what-if
-- Original location/reference: `bash scripts/deploy.sh`, subscription `6fc552c5-06b6-43d7-ac70-2f1eda1be033`, 2026-11-05
+- Original location/reference: `bash scripts/deploy.sh`, subscription `<AZURE_SUBSCRIPTION_ID>`, 2026-11-05
 - Precise locator and version: Sweden Central SKU eligible; regional vCPU 8/100 and DSv5 0/100, with 6 required; three subscription policies listed for review; what-if showed 12 resource creates
 - Status: new; no Azure resources changed; allocation and policy compatibility not proven
 

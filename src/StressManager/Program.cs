@@ -38,9 +38,14 @@ builder.Services.AddSingleton<NodeMetricsReader>();
 builder.Services.AddSingleton<CronJobs>();
 builder.Services.AddSingleton<RhythmManager>();
 builder.Services.AddSingleton<RunManager>();
-builder.Services.AddHostedService<HealthModelReconciler>();
-builder.Services.AddHostedService<RhythmReconciler>();
-builder.Services.AddHostedService<EndAnnotationBackstop>();
+// Local runs against a live cluster (demos, screen recordings): serve live data, never write it.
+var readOnly = Environment.GetEnvironmentVariable("STRESS_READ_ONLY") == "true";
+if (!readOnly)
+{
+    builder.Services.AddHostedService<HealthModelReconciler>();
+    builder.Services.AddHostedService<RhythmReconciler>();
+    builder.Services.AddHostedService<EndAnnotationBackstop>();
+}
 builder.Services.AddTimeline();
 builder.Services.AddRateLimiter(o =>
 {
@@ -110,6 +115,22 @@ else
     });
 
 app.UseRateLimiter();
+
+if (readOnly)
+{
+    log.LogWarning("config: STRESS_READ_ONLY, background writers off and rhythm changes rejected");
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path.Value ?? "";
+        if (AccessGate.IsApi(path) && !HttpMethods.IsGet(context.Request.Method) && path != "/api/rhythm/preview")
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new { error = "read-only mode" });
+            return;
+        }
+        await next(context);
+    });
+}
 
 app.MapPost(AccessGate.LoginEndpoint, async (HttpContext context) =>
 {

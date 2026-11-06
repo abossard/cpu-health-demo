@@ -49,8 +49,8 @@ class VerificationTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 "case \"$*\" in\n"
                 "  'account show'*) printf '%s\\n' "
-                "'{\"id\":\"6fc552c5-06b6-43d7-ac70-2f1eda1be033\","
-                "\"tenantId\":\"46693104-8c42-47b7-98e3-985ed39402f6\"}' ;;\n"
+                "'{\"id\":\"00000000-0000-0000-0000-000000000001\","
+                "\"tenantId\":\"00000000-0000-0000-0000-000000000002\"}' ;;\n"
                 "  'vm list'*) printf '%s\\n' "
                 "'[{\"name\":\"cpu-health-demo-1\",\"id\":\"/vm/1\"},"
                 "{\"name\":\"cpu-health-demo-2\",\"id\":\"/vm/2\"},"
@@ -79,6 +79,8 @@ class VerificationTests(unittest.TestCase):
                     "PATH": f"{bin_path}:{os.environ['PATH']}",
                     "CREATE_LOG": str(create_log),
                     "CPU_HEALTH_MODEL_MONTHLY_COST_ESTIMATE": "estimate required",
+                    "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000001",
+                    "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000002",
                 }
             )
             result = subprocess.run(

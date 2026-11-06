@@ -30,13 +30,14 @@ public sealed class HealthHistoryReader(ArmClient? arm, Settings settings)
         return (entities, relationships);
     }
 
+    // The API rejects nextMarker combined with startAt/endAt, so only the first page sends startAt.
     public async Task<IReadOnlyList<StatePoint>> ReadStatesAsync(string entity, DateTimeOffset from, CancellationToken ct)
     {
         var points = new List<StatePoint>();
         string? marker = null;
         do
         {
-            var page = (await Entity(entity).GetHistoryAsync(new EntityHistoryContent { StartsOn = from, NextMarker = marker }, ct)).Value;
+            var page = (await Entity(entity).GetHistoryAsync(new EntityHistoryContent { StartsOn = marker is null ? from : null, NextMarker = marker }, ct)).Value;
             points.AddRange(page.History.Select(h => new StatePoint(h.OccurredOn.ToUnixTimeMilliseconds(), Timeline.StateCode(h.NewState.ToString()))));
             marker = page.NextMarker;
         } while (!string.IsNullOrEmpty(marker));
@@ -50,7 +51,7 @@ public sealed class HealthHistoryReader(ArmClient? arm, Settings settings)
         do
         {
             var page = (await Entity(entity).GetSignalHistoryAsync(
-                new EntitySignalHistoryContent(signal) { StartsOn = from, NextMarker = marker }, ct)).Value;
+                new EntitySignalHistoryContent(signal) { StartsOn = marker is null ? from : null, NextMarker = marker }, ct)).Value;
             points.AddRange(page.History.Select(h =>
                 new SignalPoint(h.OccurredOn.ToUnixTimeMilliseconds(), Timeline.RoundValue(h.Value), Timeline.StateCode(h.HealthState.ToString()))));
             marker = page.NextMarker;
@@ -64,7 +65,7 @@ public sealed class HealthHistoryReader(ArmClient? arm, Settings settings)
         string? marker = null;
         do
         {
-            var page = (await Entity(entity).GetDataAnnotationsAsync(new EntityGetDataAnnotationsContent { StartsOn = from, NextMarker = marker }, ct)).Value;
+            var page = (await Entity(entity).GetDataAnnotationsAsync(new EntityGetDataAnnotationsContent { StartsOn = marker is null ? from : null, NextMarker = marker }, ct)).Value;
             annotations.AddRange(page.Annotations.Where(a => a.CreatedOn is not null).Select(a => ToAnnotation(entity, a)));
             marker = page.NextMarker;
         } while (!string.IsNullOrEmpty(marker));

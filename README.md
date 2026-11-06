@@ -4,6 +4,8 @@ Stress three AKS nodes on a repeating schedule and watch an Azure Monitor health
 
 ![Rhythm editor](docs/images/rhythm.gif)
 
+Full-resolution videos: [rhythm editor](docs/images/rhythm.mp4), [health timeline](docs/images/timeline.mp4).
+
 ## What you get
 
 - **AKS cluster** with a fixed pool of three stress nodes.
@@ -12,7 +14,7 @@ Stress three AKS nodes on a repeating schedule and watch an Azure Monitor health
 - **Data annotations** written by each stress run when it starts and ends, so the health history shows what caused each state change.
 - **Health timeline**, a page that draws every node's state, CPU and annotations on one time axis, so you can see whether the nodes degrade together.
 
-![Health timeline](docs/images/timeline.gif)
+![Health timeline: zoom and pan](docs/images/timeline-zoom.gif)
 
 ## How it fits together
 
@@ -110,6 +112,8 @@ Click **Timeline** in the header.
 - Wheel or pinch to zoom, drag or flick to pan, Shift+drag to zoom into a range. Keys: `+` `-` `←` `→` `0`. **Back to live** returns to the newest data.
 - The page caches history in the browser and receives only new points.
 
+![Health timeline: compare nodes](docs/images/timeline-compare.gif)
+
 ## Proof from the health model API
 
 `scripts/aks-proof.sh` prints each node's state changes and annotations from the health model API:
@@ -128,6 +132,8 @@ dotnet test src/StressManager.sln
 
 Pure logic (rhythm compiler and reducer, Job template, layout, timeline analysis) lives in `src/StressManager/Calculations` and is covered by parametrized xUnit tests. Kubernetes and Azure calls live in `Actions` and `Services`.
 
+To run the UI locally against the deployed cluster without changing anything, set `STRESS_READ_ONLY=true`. The background writers stay off and rhythm changes return 403, while pages, live metrics and the timeline show real data. Your kubeconfig and `az login` provide access; without `STRESS_ACCESS_CODE` the local site has no sign-in.
+
 ## VM demo
 
-The repo also holds the earlier version on three virtual machines: `infra/main.bicep`, `infra/healthmodel.bicep`, `scripts/deploy.sh` (read-only checks unless `--deploy` is given), `scripts/verify.sh` and the Python tests in `tests/`. It does not use azd. Its health model is documented in [docs/healthmodel/modelspec.md](docs/healthmodel/modelspec.md).
+The repo also holds the earlier version on three virtual machines: `infra/main.bicep`, `infra/healthmodel.bicep`, `scripts/deploy.sh` (read-only checks unless `--deploy` is given), `scripts/verify.sh` and the Python tests in `tests/`. It does not use azd. The scripts read `AZURE_SUBSCRIPTION_ID` and `AZURE_TENANT_ID` from the environment or from a `.env` file in the repo root, which git ignores; copy `.env.example` to start. Its health model is documented in [docs/healthmodel/modelspec.md](docs/healthmodel/modelspec.md).
