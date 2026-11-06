@@ -42,8 +42,17 @@ const TL = (() => {
     return out;
   }
 
+  // True when a node has signal history but its raw CPU is missing or starts more than 15 min later.
+  function rawCpuIncomplete(store) {
+    const starts = Object.values(store.signals || {}).map(p => (p && p.length ? p[0][0] : Infinity));
+    const first = Math.min(Infinity, ...starts);
+    if (first === Infinity) return false;
+    const nodes = (store.entities || []).filter(e => e.kind === 'node').map(e => e.name);
+    return nodes.some(n => { const r = (store.rawCpu || {})[n]; return !r || !r.length || r[0][0] - first > 15 * MIN; });
+  }
+
   const emptyStore = () => ({
-    v: 2, cursor: null, thresholds: { degraded: 90, unhealthy: 98 }, entities: [],
+    v: 3, cursor: null, thresholds: { degraded: 90, unhealthy: 98 }, entities: [],
     states: {}, signals: {}, rawCpu: {}, annotations: {}, runs: [], disagreements: [],
   });
 
@@ -178,15 +187,16 @@ const TL = (() => {
     return out;
   }
 
-  // Markers sorted by x -> clusters; a marker joins the previous cluster when closer than minPx to its last member.
+  // Markers sorted by x -> clusters at their first member's x. A marker joins when closer than minPx to that first
+  // member, so a cluster spans less than minPx and dense markers cannot chain into one bubble.
   function cluster(markers, minPx) {
     const out = [];
     for (const m of markers) {
       const c = out[out.length - 1];
-      if (c && m.x - c.lastX < minPx) { c.items.push(m.item); c.lastX = m.x; c.x = (c.firstX + m.x) / 2; }
-      else out.push({ x: m.x, firstX: m.x, lastX: m.x, items: [m.item] });
+      if (c && m.x - c.x < minPx) c.items.push(m.item);
+      else out.push({ x: m.x, items: [m.item] });
     }
-    return out.map(c => ({ x: c.x, items: c.items }));
+    return out;
   }
 
   // Gaps of sorted intervals within [t0, t1].
@@ -313,7 +323,7 @@ const TL = (() => {
   }
 
   return {
-    MIN, HOUR, toMs, indexAfter, indexFromT, mergePoints, mergeRuns, emptyStore, mergeDelta, dataEnd, prune, pointAt, forEachSegment, segments,
+    MIN, HOUR, toMs, indexAfter, indexFromT, mergePoints, mergeRuns, emptyStore, rawCpuIncomplete, mergeDelta, dataEnd, prune, pointAt, forEachSegment, segments,
     forEachPoint, buildLevels, pickLevel, scale, tickStep, firstTick, timeTicks, cluster, complement, overshoot, rubberFactor,
     zoomAt, momentumStep, releaseVelocity, orderEntities, nodeNames, signalKey, skewRows, snapshot,
   };
@@ -660,7 +670,7 @@ const TL = (() => {
         drawStates(ctx, level.points, f, Math.max(SIGNAL_HOLD, level.size), w, h, true);
         drawThresholds(ctx, w, h);
         const raw = app.toggles.raw && dv.raw[m.entity];
-        if (raw) drawSeries(ctx, TL.pickLevel(raw, f.msPerPx), f, h, c.raw, false, RAW_GAP, 1);
+        if (raw) drawSeries(ctx, TL.pickLevel(raw, f.msPerPx), f, h, c.raw, false, RAW_GAP, 2);
         drawSeries(ctx, level, f, h, c.line, false);
       } else drawThresholds(ctx, w, h);
     }
@@ -773,14 +783,18 @@ const TL = (() => {
     ctx.font = BUBBLE_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    let count = 0, firstX = 0, lastX = 0, phase = '';
-    for (let i = TL.indexFromT(list, f.t0); i < list.length && list[i].t <= f.t1; i++) {
+    // Same rule as TL.cluster. Grouping starts at the oldest annotation, not the first visible one,
+    // so clusters keep their members while the view pans.
+    const w = trackWidth();
+    let count = 0, firstX = 0, phase = '';
+    for (let i = 0; i < list.length; i++) {
       const x = X(list[i].t);
-      if (count && x - lastX < CLUSTER_PX) { count++; lastX = x; continue; }
-      if (count) drawBubble(ctx, (firstX + lastX) / 2, count, phase, h);
-      count = 1; firstX = lastX = x; phase = list[i].phase;
+      if (count && x - firstX < CLUSTER_PX) { count++; continue; }
+      if (count && firstX > -BUBBLE_W && firstX < w + BUBBLE_W) drawBubble(ctx, firstX, count, phase, h);
+      if (x > w + BUBBLE_W) return;
+      count = 1; firstX = x; phase = list[i].phase;
     }
-    if (count) drawBubble(ctx, (firstX + lastX) / 2, count, phase, h);
+    if (count && firstX > -BUBBLE_W && firstX < w + BUBBLE_W) drawBubble(ctx, firstX, count, phase, h);
   }
 
   function drawBubble(ctx, x, n, phase, h) {
@@ -886,7 +900,7 @@ const TL = (() => {
     const row = h.key ? app.rows.get(h.key) : null;
     let cluster = null;
     if (row && row.model.kind === 'band' && Math.abs(h.y - HEIGHTS.band / 2) < 12) {
-      const list = (app.derived.ann[row.model.entity] || []).filter(a => a.t >= app.disp.t0 && a.t <= app.disp.t1);
+      const list = app.derived.ann[row.model.entity] || [];
       for (const c of TL.cluster(list.map(a => ({ x: X(a.t), item: a })), CLUSTER_PX)) {
         if (Math.abs(c.x - h.x) <= 9 && (!cluster || Math.abs(c.x - h.x) < Math.abs(cluster.x - h.x))) cluster = c;
       }
@@ -1137,7 +1151,9 @@ const TL = (() => {
     wire();
     renderStatus();
     const cached = await cacheLoad();
-    if (cached && cached.v === TL.emptyStore().v) {
+    // A cache written while a server without rawCpu still answered never receives the older raw points
+    // through deltas, so such a cache is dropped and the page loads the full window again.
+    if (cached && cached.v === TL.emptyStore().v && !TL.rawCpuIncomplete(cached)) {
       app.store = TL.prune(cached, Date.now() - RETAIN);
       app.derived = derive(app.store);
       setConn('cached');
