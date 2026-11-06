@@ -1,120 +1,133 @@
 # CPU health demo
 
-This project provisions three `Standard_D2s_v5` virtual machines in Sweden
-Central. Their CPU stress schedules align using the VMs' system clocks. The
-health model measures CPU pressure.
+Stress three AKS nodes on a repeating schedule and watch an Azure Monitor health model turn them Degraded and Unhealthy, with a start and end marker for every run.
 
-The runners use the same `CPU_HEALTH_SCHEDULE_EPOCH` in
-`/etc/default/cpu-health-stress` (Unix epoch by default). They repeat 1–6
-minute bursts, each followed by six minutes idle, and skip bursts already in
-progress after a restart. Alignment depends on the VM clocks. A runner that
-misses a phase boundary by more than one second fails and restarts to rejoin a
-later phase.
+![Rhythm editor](docs/images/rhythm.gif)
 
-## Before deployment
+## What you get
 
-The deployment target is subscription
-`6fc552c5-06b6-43d7-ac70-2f1eda1be033`, tenant
-`46693104-8c42-47b7-98e3-985ed39402f6`, and resource group
-`rg-cpu-health-demo`. The deployment script checks the selected account,
-regional SKU restrictions, core and DSv5 quotas, subscription policy
-assignments, and a subscription deployment what-if. It is read-only unless
-`--deploy` is explicitly supplied and the required monthly estimate and exact
-confirmation are set.
-Policy assignments are listed for review; that is not a compliance
-determination, and Azure can still reject a deployment.
+- **AKS cluster** with a fixed pool of three stress nodes.
+- **Stress manager**, a .NET web app. You design a stress rhythm (for example 5 min at 100%, 2 min break, repeated forever) and it runs as Kubernetes CronJobs.
+- **Health model** with one entity per node and the signal "average CPU, 5 minutes", Degraded above 90%, Unhealthy above 98%.
+- **Data annotations** written by each stress run when it starts and ends, so the health history shows what caused each state change.
+- **Health timeline**, a page that draws every node's state, CPU and annotations on one time axis, so you can see whether the nodes degrade together.
 
-```bash
-bash scripts/deploy.sh
+![Health timeline](docs/images/timeline.gif)
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    U["You<br/>browser"] -->|access code| M["stress-manager<br/>web app"]
+    M -->|CronJobs| K["AKS<br/>stress pool, 3 nodes"]
+    K -->|stress-ng + annotator| HM["Azure Monitor<br/>health model"]
+    M -->|builds model, reads history| HM
+    HM -->|Percentage CPU| K
 ```
 
-The infrastructure does not expose public inbound ports. The three VMs, public
-IP addresses, disks, and network resources can incur charges. A 730-hour public-retail estimate
-checked on 2026-11-05 is about $238.94 USD/month for VM compute, three static
-Standard IPv4 addresses, and three 32-GiB Standard HDD disks. It excludes
-outbound bandwidth, disk operations, tax, and subscription-specific discounts.
-Review the current monthly cost before approving deployment. SKU eligibility
-and quota do not guarantee that Azure has allocation capacity.
+1. The manager compiles your rhythm into CronJobs. Each ON step becomes one or more cron lines in UTC.
+2. When a CronJob fires, it starts a Job with one pod per stress node. The pod runs `stress-ng` at the step's load.
+3. A sidecar in the same pod writes a `start` annotation on its node's health model entity once stress-ng runs, and an `end` annotation when the pod stops.
+4. The health model evaluates each node's CPU every minute. The timeline page reads that history and the annotations.
 
-The three VMs have been deployed. The local bootstrap baseline is recorded in
-`tests/BASELINE.txt`; strict preflight against an existing Git HEAD was
-unavailable because the approved branch has no commit.
+Details: [docs/aks/spec.md](docs/aks/spec.md) (contract) and [docs/aks/timeline.md](docs/aks/timeline.md) (timeline API).
 
-## Tests and templates
+## Deploy
 
-Run the offline suite and compile the infrastructure templates:
+You need the [Azure Developer CLI](https://aka.ms/azd), the Azure CLI, [kubelogin](https://azure.github.io/kubelogin/) and the .NET 10 SDK. Docker is not needed; the image builds in Azure Container Registry.
+
+1. Sign in and create an environment:
+
+   ```bash
+   azd auth login
+   ```
+
+   ```bash
+   azd env new aks-cpu-health --location swedencentral
+   ```
+
+2. Pick an access code for the website. It stays in your local azd environment and is deployed as a Kubernetes Secret:
+
+   ```bash
+   azd env set STRESS_ACCESS_CODE <your-code>
+   ```
+
+3. Deploy everything:
+
+   ```bash
+   azd up
+   ```
+
+   `azd up` prints the site address at the end (`Load Balancer: http://<ip>`).
+
+4. Optional, to use `kubectl` (the cluster accepts Microsoft Entra ID sign-in only):
+
+   ```bash
+   az aks get-credentials -g rg-aks-cpu-health -n aks-aks-cpu-health
+   ```
+
+   ```bash
+   kubelogin convert-kubeconfig -l azurecli
+   ```
+
+Costs: three `Standard_D2s_v5` stress nodes, one `Standard_B2s_v2` system node, extra nodes that Node Auto Provisioning adds, a load balancer and a public IP. Remove everything with `azd down`.
+
+## Use it
+
+### Sign in
+
+Open the site and enter your access code. The browser keeps you signed in for 30 days.
+
+<img src="docs/images/login.jpg" alt="Sign-in page" width="400">
+
+### Design a rhythm
+
+![Rhythm page](docs/images/rhythm.jpg)
+
+- Each row is a step: minutes and load. Load 0 is a break.
+- Presets fill the editor. "Reach Unhealthy" (6 min at 100%, 9 min break) is the quickest way to see the model react.
+- The preview shows one cycle, how often it repeats per day, the next start time and the CronJobs it will create.
+- The cycle must divide 24 hours. If yours doesn't, the last break grows and the preview says by how much.
+- Rows under 5 minutes or at 90% load or below get a warning: the health signal averages 5 minutes, so those steps never reach Degraded.
+- **Apply rhythm** writes the CronJobs. **Pause** suspends them and stops the running step. **Clear** deletes them.
+- The right column shows the running step and live CPU per node from metrics-server (instant values; the health model uses the 5-minute average).
+
+### Read the timeline
+
+Click **Timeline** in the header.
+
+| | |
+|---|---|
+| ![Zoomed in](docs/images/timeline-zoom.jpg) | ![Overlay](docs/images/timeline-overlay.jpg) |
+| Zoomed in to one run: start and end markers, the CPU curve and the state bands | Overlay and highlight: all node CPU lines in one chart, agreement dimmed |
+
+- Each node has an entity state band, a signal band and a CPU chart with dashed lines at 90% and 98%.
+- Blue markers are annotations; close markers merge into a numbered bubble.
+- **Disagreement lane**: pink where the nodes are in different states.
+- **Highlight differences**: dims the time where all nodes agree.
+- **Overlay**: one chart with every node's CPU.
+- **Onset skew table**: for each run, how many seconds after the start each node went Degraded and Unhealthy, and the spread between nodes. A spread over 120 s is flagged.
+- Wheel or pinch to zoom, drag or flick to pan, Shift+drag to zoom into a range. Keys: `+` `-` `←` `→` `0`. **Back to live** returns to the newest data.
+- The page caches history in the browser and receives only new points.
+
+## Proof from the health model API
+
+`scripts/aks-proof.sh` prints each node's state changes and annotations from the health model API:
 
 ```bash
-python3 -m unittest discover -s tests -v
-bicep build infra/main.bicep --stdout
-bicep build infra/compute.bicep --stdout
-bicep build infra/healthmodel.bicep --stdout
+scripts/aks-proof.sh 2026-11-05T21:10:00Z
 ```
 
-The health-model template is separate from the VM deployment. It binds one
-`Percentage CPU` signal to each VM, averaging over five minutes and refreshing
-every minute. The reviewed thresholds are Degraded above 90% and Unhealthy
-above 98%. Its system-assigned identity receives Reader on each monitored VM.
-The model was deployed after all three live metric streams were verified and
-the exact model deployment and role assignments were approved.
+Recorded runs: [docs/aks/proof.md](docs/aks/proof.md) and [docs/aks/proof-rhythm.md](docs/aks/proof-rhythm.md).
 
-For a new deployment, the model deployment script verifies live metrics,
-shows a read-only what-if, and prints the exact confirmation string. It refuses
-to overwrite an existing model or deploy without the reviewed monthly estimate
-and exact confirmation:
+## Develop
 
 ```bash
-bash scripts/deploy.sh --health-model
+dotnet test src/StressManager.sln
 ```
 
-Only after reviewing and approving that output, provide the estimate and
-matching confirmation and rerun with `--health-model --deploy`.
+Pure logic (rhythm compiler and reducer, Job template, layout, timeline analysis) lives in `src/StressManager/Calculations` and is covered by parametrized xUnit tests. Kubernetes and Azure calls live in `Actions` and `Services`.
 
-## Verify and operate
+## VM demo
 
-After the VMs are deployed, check that each VM returns recent `Percentage CPU`
-Average data at PT1M and PT5M:
-
-```bash
-bash scripts/verify.sh
-```
-
-After the health model and stress runners are deployed, the full CPU/state
-verification takes 81 minutes. It covers the 57-minute stress cycle and
-evaluation lag, and only reads metrics and model state:
-
-```bash
-bash scripts/verify.sh --live
-```
-
-To stop the stress schedule, use the Azure VM Run Command from an identity
-authorized to run commands on the VMs. This executes the local stop operation
-through the Azure control plane and does not open a public administration port:
-
-```bash
-for vm in cpu-health-demo-1 cpu-health-demo-2 cpu-health-demo-3; do
-  az vm run-command invoke \
-    --subscription 6fc552c5-06b6-43d7-ac70-2f1eda1be033 \
-    --resource-group rg-cpu-health-demo \
-    --name "$vm" \
-    --command-id RunShellScript \
-    --scripts "sudo /usr/local/sbin/cpu-health-stress stop"
-done
-```
-
-To start the schedules again:
-
-```bash
-for vm in cpu-health-demo-1 cpu-health-demo-2 cpu-health-demo-3; do
-  az vm run-command invoke \
-    --subscription 6fc552c5-06b6-43d7-ac70-2f1eda1be033 \
-    --resource-group rg-cpu-health-demo \
-    --name "$vm" \
-    --command-id RunShellScript \
-    --scripts "sudo systemctl enable --now cpu-health-stress.service"
-done
-```
-
-No public administration port is provisioned. Do not delete the resource group
-or other Azure resources without reviewing the exact target and obtaining
-approval; cleanup is never automatic.
+The repo also holds the earlier version on three virtual machines: `infra/main.bicep`, `infra/healthmodel.bicep`, `scripts/deploy.sh` (read-only checks unless `--deploy` is given), `scripts/verify.sh` and the Python tests in `tests/`. It does not use azd. Its health model is documented in [docs/healthmodel/modelspec.md](docs/healthmodel/modelspec.md).
