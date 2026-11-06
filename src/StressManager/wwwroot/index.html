@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>CPU Stress Manager</title>
+<script>
+  try { const t = localStorage.getItem('theme-preference'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
+<link rel="stylesheet" href="app.css">
+<style>
+  /* Dashboard grid. Phone: one column, cards in reading order. Tablet: two columns. Wide: main + side. */
+  .dash { display: grid; gap: var(--space-4); grid-template-columns: minmax(0, 1fr); align-content: start; }
+  .dash-main, .dash-side { display: contents; }
+  #run-card { order: 1; } #rhythm-card { order: 2; } #preview-card { order: 3; } #metrics-card { order: 4; } #rhythm-error { order: 98; } .action-bar { order: 99; }
+  @media (min-width: 768px) {
+    .dash { grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); align-items: start; }
+    .dash-main, .dash-side { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+  }
+  @media (min-width: 1024px) {
+    .dash { grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 440px); }
+    .dash-side { position: sticky; top: calc(var(--header-h) + var(--space-4)); }
+  }
+
+  /* Sticky action bar: full-bleed bottom bar on phones, floating toolbar elsewhere */
+  .action-bar {
+    position: sticky; bottom: 0; z-index: 10;
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
+    padding: var(--space-3) var(--gutter) calc(var(--space-3) + env(safe-area-inset-bottom));
+    margin: 0 calc(-1 * var(--gutter)) calc(-1 * var(--space-8));
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--color-border);
+  }
+  .action-bar .btn { flex: 1; }
+  .action-bar .hint { flex-basis: 100%; order: -1; }
+  .action-bar .hint:empty { display: none; }
+  @media (min-width: 768px) {
+    .action-bar { bottom: var(--space-4); margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-2); }
+    .action-bar .btn { flex: 0 0 auto; }
+    .action-bar .hint { flex-basis: auto; order: 0; margin-left: auto; }
+  }
+  #rhythm-error { margin-top: 0; }
+
+  /* Active run */
+  .run-state { font-weight: 600; }
+  .run-state[data-tone="healthy"] { color: var(--color-healthy); }
+  .run-state[data-tone="degraded"] { color: var(--color-degraded); }
+  .run-meta { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+
+  /* Node CPU rows */
+  .node { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-3); padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+  .node:first-child { border-top: 0; padding-top: 0; }
+  .node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node-value { font-size: var(--text-md); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .node .meter, .node .spark, .node-detail { grid-column: 1 / -1; }
+  .spark { width: 100%; height: 32px; display: block; }
+  .spark polyline { fill: none; stroke: var(--color-accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .spark line { stroke: var(--color-degraded); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+
+  /* Rhythm editor rows: two lines when narrow, one line when the card is wide */
+  .steps { display: flex; flex-direction: column; }
+  .step {
+    display: grid; align-items: center; gap: var(--space-2);
+    grid-template-columns: 20px auto auto 1fr auto;
+    grid-template-areas: "n min load . btns" "slider slider slider slider tag";
+    padding: var(--space-2) 0; border-top: 1px solid var(--color-border);
+  }
+  .step:first-child { border-top: 0; }
+  @container (min-width: 600px) {
+    .step { grid-template-columns: 20px auto minmax(80px, 1fr) auto 56px auto; grid-template-areas: "n min slider load tag btns"; }
+  }
+  .step .n { grid-area: n; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+  .step .min { grid-area: min; } .step .load { grid-area: load; } .step .tag { grid-area: tag; }
+  .step .slider { grid-area: slider; width: 100%; }
+  .step .btns { grid-area: btns; display: flex; gap: var(--space-1); }
+  .unit { display: flex; align-items: center; gap: var(--space-1); color: var(--color-text-muted); }
+  .unit input { width: 64px; }
+  .tag { width: 56px; text-align: center; border-radius: var(--radius-pill); font-size: var(--text-xs); font-weight: 600; line-height: 20px; color: var(--color-on-status); }
+  .step.break .tag { background: var(--color-surface-2); color: var(--color-text-muted); }
+  .warnings { margin: 0; padding-left: var(--space-5); font-size: var(--text-xs); }
+  .warnings:empty { display: none; }
+
+  /* Cycle timeline */
+  .timeline { display: flex; height: 44px; border-radius: var(--radius-md); overflow: hidden; background: var(--color-surface-2); }
+  .seg { min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: var(--text-xs); font-weight: 600; color: var(--color-on-status); border-right: 2px solid var(--color-surface); }
+  .seg:last-child { border-right: 0; }
+  .seg.break { background: var(--color-surface-2); color: var(--color-text-muted); font-weight: 400; }
+  .seg.pad { background-image: repeating-linear-gradient(45deg, transparent 0 5px, color-mix(in srgb, var(--color-text-muted) 30%, transparent) 5px 10px); }
+  .scale { display: flex; justify-content: space-between; margin-top: var(--space-1); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-2); margin: var(--space-4) 0 0; }
+  .facts div { background: var(--color-surface-2); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); }
+  .facts dt { font-size: var(--text-xs); color: var(--color-text-muted); }
+  .facts dd { margin: 0; font-weight: 600; }
+  .facts .wide { grid-column: span 2; }
+  #preview-pad { margin: var(--space-2) 0 0; }
+  @media (max-width: 479px) {
+    .app-brand { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .app-header h1 { font-size: var(--text-md); }
+    .app-header .btn-ghost:not(.btn-icon) { padding: 0 var(--space-2); }
+  }
+  #preview-card details { margin-top: var(--space-3); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="app-header">
+    <div class="app-brand">
+      <h1>CPU Stress Manager</h1>
+      <span class="badge" id="rhythm-badge" title="Rhythm state"><span class="badge-label">Rhythm</span><span id="rhythm-state">loading</span></span>
+    </div>
+    <a class="btn btn-ghost" href="timeline.html">Timeline</a>
+    <button type="button" id="theme-toggle" class="btn btn-ghost btn-icon"></button>
+  </header>
+
+  <main class="app-main dash">
+    <div class="dash-main">
+      <section class="card" id="rhythm-card" aria-labelledby="rhythm-title">
+        <div class="card-header">
+          <h2 id="rhythm-title">Rhythm</h2>
+          <p id="rhythm-summary" class="muted">Loading…</p>
+        </div>
+        <div id="rhythm-poll-error" class="alert"></div>
+        <fieldset id="editor" class="stack">
+          <div class="cluster" id="presets"></div>
+          <div class="steps" id="steps"></div>
+          <ul id="step-warnings" class="warnings note"></ul>
+          <div><button type="button" class="btn btn-sm" id="add-step">+ Add step</button></div>
+        </fieldset>
+      </section>
+
+      <section class="card" id="preview-card" aria-labelledby="preview-title">
+        <div class="card-header">
+          <h2 id="preview-title">Preview</h2>
+          <span class="muted small">One cycle from 00:00 UTC</span>
+        </div>
+        <div id="timeline" class="timeline"></div>
+        <div id="scale" class="scale muted small"></div>
+        <dl id="preview-facts" class="facts"></dl>
+        <p id="preview-pad" class="note small" hidden></p>
+        <details id="cronjob-details">
+          <summary id="cronjob-summary">CronJobs</summary>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>CronJob</th><th>Cron (UTC)</th><th>Row</th><th>Minutes</th><th>Load</th></tr></thead>
+              <tbody id="cronjobs"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <div id="rhythm-error" class="alert"></div>
+      <div class="action-bar">
+        <button type="button" class="btn btn-primary" id="rhythm-apply">Apply rhythm</button>
+        <button type="button" class="btn" id="rhythm-toggle">Pause</button>
+        <button type="button" class="btn btn-danger" id="rhythm-clear">Clear</button>
+        <span id="apply-hint" class="hint muted small"></span>
+      </div>
+    </div>
+
+    <aside class="dash-side">
+      <section class="card" id="run-card" aria-labelledby="run-title">
+        <div class="card-header"><h2 id="run-title">Active run</h2></div>
+        <div id="run" class="muted">Loading…</div>
+        <div id="run-error" class="alert"></div>
+      </section>
+
+      <section class="card" id="metrics-card" aria-labelledby="metrics-title">
+        <div class="card-header"><h2 id="metrics-title">Live node CPU</h2></div>
+        <p id="metrics-note" class="muted small" style="margin:0 0 var(--space-3)"></p>
+        <div id="metrics" class="muted">Loading…</div>
+        <div id="metrics-error" class="alert"></div>
+      </section>
+    </aside>
+  </main>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let activeRun = null;
+
+function showError(box, message) {
+  $(box).textContent = message || '';
+  $(box).style.display = message ? 'block' : 'none';
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    signal: AbortSignal.timeout(10000),
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 204) return null;
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+  if (!res.ok) {
+    const reason = res.status === 409 ? 'Conflict' : res.status === 400 ? 'Invalid input' : 'Error';
+    throw new Error(`${reason} (HTTP ${res.status}): ${(data && data.error) || text || res.statusText}`);
+  }
+  return data;
+}
+
+const fmt = iso => iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '-';
+
+// Runs task every everyMs, one call in flight, doubling the wait after each failure (max 60 s).
+// Stops while the tab is hidden and runs at once when it is shown again.
+function poll(task, everyMs) {
+  let failures = 0, timer = null, inFlight = false;
+  async function tick() {
+    clearTimeout(timer);
+    timer = null;
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    const ok = await task();
+    inFlight = false;
+    failures = ok ? 0 : failures + 1;
+    timer = setTimeout(tick, Math.min(everyMs * 2 ** failures, 60000));
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  tick();
+}
+
+// ---- Theme ----
+const effectiveTheme = () => document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+function renderThemeToggle() {
+  const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+  $('theme-toggle').textContent = next === 'dark' ? '☾' : '☀';
+  $('theme-toggle').setAttribute('aria-label', `Switch to ${next} theme`);
+  $('theme-toggle').title = `Switch to ${next} theme`;
+}
+$('theme-toggle').onclick = () => {
+  const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme-preference', next); } catch {}
+  renderThemeToggle();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderThemeToggle);
+
+// ---- Active run ----
+function remaining(endsAt) {
+  const s = Math.max(0, Math.round((new Date(endsAt) - Date.now()) / 1000));
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+function renderRun() {
+  const el = $('run');
+  if (!activeRun) {
+    el.className = 'muted';
+    el.textContent = 'No active run.';
+    return;
+  }
+  el.className = '';
+  el.innerHTML = '';
+  const pending = activeRun.phase === 'pending';
+  const state = document.createElement('span');
+  state.className = 'run-state';
+  state.dataset.tone = pending ? 'degraded' : 'healthy';
+  state.textContent = pending ? 'Pending' : 'Running';
+  const line = document.createElement('div');
+  line.append(state, ` ${activeRun.minutes} min @ ${activeRun.load ?? 100}% from ${activeRun.source}`);
+  const ends = document.createElement('div');
+  ends.textContent = `Ends ${fmt(activeRun.endsAt)} (${remaining(activeRun.endsAt)} left)`;
+  const meta = document.createElement('p');
+  meta.className = 'run-meta muted small';
+  meta.textContent = `Run ${activeRun.runId}, started ${fmt(activeRun.startedAt)}, nodes: ${(activeRun.nodes || []).join(', ')}`;
+  el.append(line, ends, meta);
+}
+
+async function loadRun() {
+  try {
+    activeRun = await api('GET', '/api/runs/active');
+    showError('run-error', '');
+    return true;
+  } catch (e) {
+    showError('run-error', e.message);
+    return false;
+  } finally {
+    renderRun();
+  }
+}
+
+// ---- Live node CPU ----
+let signal = { timeGrain: 'PT5M', degraded: 90, unhealthy: 98 };
+const grainMinutes = grain => { const m = /^PT(\d+)M$/.exec(grain || ''); return m ? Number(m[1]) : 5; };
+const cpuTone = pct => pct > signal.unhealthy ? 'unhealthy' : pct > signal.degraded ? 'degraded' : 'healthy';
+
+function renderMetricsNote() {
+  $('metrics-note').textContent = `Instant CPU, % of allocatable (metrics-server), every 15 s. The health model uses a ${grainMinutes(signal.timeGrain)}-min average: Degraded above ${signal.degraded}%, Unhealthy above ${signal.unhealthy}%.`;
+}
+
+const HISTORY_MS = 5 * 60 * 1000;
+const history = new Map();
+const SVG = 'http://www.w3.org/2000/svg';
+
+function remember(m) {
+  if (m.cpuPercent == null) return;
+  const points = history.get(m.node) || [];
+  const t = m.timestamp ? new Date(m.timestamp).getTime() : Date.now();
+  if (!points.length || points[points.length - 1].t !== t) points.push({ t, v: m.cpuPercent });
+  history.set(m.node, points.filter(p => p.t >= Date.now() - HISTORY_MS));
+}
+
+function sparkline(points) {
+  const w = 300, h = 32, now = Date.now();
+  const max = Math.max(100, ...points.map(p => p.v));
+  const x = t => (w * (t - (now - HISTORY_MS)) / HISTORY_MS).toFixed(1);
+  const y = v => (h - 1 - (h - 2) * v / max).toFixed(1);
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('class', 'spark');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const limit = document.createElementNS(SVG, 'line');
+  limit.setAttribute('x1', 0); limit.setAttribute('x2', w);
+  limit.setAttribute('y1', y(signal.degraded)); limit.setAttribute('y2', y(signal.degraded));
+  const line = document.createElementNS(SVG, 'polyline');
+  line.setAttribute('points', points.map(p => `${x(p.t)},${y(p.v)}`).join(' '));
+  const title = document.createElementNS(SVG, 'title');
+  title.textContent = `Last 5 min. Dashed line: ${signal.degraded}% (Degraded)`;
+  svg.append(title, limit, line);
+  return svg;
+}
+
+function meter(pct) {
+  const bar = document.createElement('div');
+  bar.className = 'meter';
+  const fill = document.createElement('div');
+  fill.className = 'fill';
+  fill.style.width = `${Math.min(100, pct)}%`;
+  fill.dataset.tone = cpuTone(pct);
+  bar.append(fill);
+  for (const at of [signal.degraded, signal.unhealthy]) {
+    const tick = document.createElement('div');
+    tick.className = 'tick';
+    tick.style.left = `${at}%`;
+    bar.append(tick);
+  }
+  return bar;
+}
+
+async function loadMetrics() {
+  let metrics;
+  try {
+    metrics = await api('GET', '/api/metrics/nodes') || [];
+    showError('metrics-error', '');
+  } catch (e) {
+    showError('metrics-error', e.message);
+    return false;
+  }
+  metrics.forEach(remember);
+  const el = $('metrics');
+  el.className = '';
+  el.innerHTML = '';
+  if (metrics.length === 0) {
+    el.className = 'muted';
+    el.textContent = 'No stress nodes.';
+    return true;
+  }
+  for (const m of metrics) {
+    const row = document.createElement('div');
+    row.className = 'node';
+    const name = document.createElement('span');
+    name.className = 'node-name';
+    name.textContent = m.node;
+    name.title = m.node;
+    const value = document.createElement('span');
+    value.className = 'node-value';
+    value.textContent = m.cpuPercent == null ? '-' : `${m.cpuPercent.toFixed(1)}%`;
+    const detail = document.createElement('span');
+    detail.className = 'node-detail muted small';
+    detail.textContent = m.cpuPercent == null ? 'No metrics yet' : `${m.cpuMillicores}m CPU · ${(m.memoryBytes / 1073741824).toFixed(2)} GiB memory`;
+    row.append(name, value, meter(m.cpuPercent || 0), sparkline(history.get(m.node) || []), detail);
+    el.append(row);
+  }
+  return true;
+}
+
+// ---- Rhythm: calculations (pure) ----
+const PRESETS = [
+  { name: '5 min 70% / 2 break / 5 min 90% / 3 break', steps: [{ minutes: 5, load: 70 }, { minutes: 2, load: 0 }, { minutes: 5, load: 90 }, { minutes: 3, load: 0 }] },
+  { name: 'Reach Unhealthy: 6 min 100% / 9 break', steps: [{ minutes: 6, load: 100 }, { minutes: 9, load: 0 }] },
+  { name: 'Gentle wave', steps: [{ minutes: 10, load: 30 }, { minutes: 10, load: 50 }, { minutes: 10, load: 70 }, { minutes: 10, load: 50 }, { minutes: 20, load: 0 }] },
+  { name: 'Spike every 15 min', steps: [{ minutes: 3, load: 100 }, { minutes: 12, load: 0 }] },
+];
+const clampInt = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)));
+const hasOnStep = steps => steps.some(s => s.load > 0);
+const sumMinutes = steps => steps.reduce((a, s) => a + s.minutes, 0);
+const copySteps = steps => steps.map(s => ({ minutes: s.minutes, load: s.load }));
+const loadColor = load => `color-mix(in oklch, var(--color-healthy), var(--color-unhealthy) ${load}%)`;
+const stepText = s => s.load > 0 ? `${s.minutes} min @ ${s.load}%` : `${s.minutes} min break`;
+const moveItem = (list, from, to) => { const copy = list.slice(); copy.splice(to, 0, ...copy.splice(from, 1)); return copy; };
+const STATE_TONE = { active: 'healthy', paused: 'degraded', drifted: 'unhealthy' };
+
+// One cycle as timeline segments; the last `paddedMinutes` are marked as padding.
+function segments(r) {
+  const segs = r.steps.map(s => ({ minutes: s.minutes, load: s.load, pad: false }));
+  const missing = r.cycleMinutes - sumMinutes(segs);
+  if (missing > 0) segs.push({ minutes: missing, load: 0, pad: false });
+  let pad = Math.min(r.paddedMinutes || 0, r.cycleMinutes);
+  for (let i = segs.length - 1; pad > 0 && i >= 0 && segs[i].load === 0; i--) {
+    const take = Math.min(pad, segs[i].minutes);
+    const rest = segs[i].minutes - take;
+    segs.splice(i, 1, ...(rest > 0 ? [{ minutes: rest, load: 0, pad: false }] : []), { minutes: take, load: 0, pad: true });
+    pad -= take;
+  }
+  return segs;
+}
+
+// Applied steps end with the padding break; the editor shows the steps without it.
+function withoutPadding(r) {
+  const steps = copySteps(r.steps);
+  const last = steps[steps.length - 1];
+  if (r.paddedMinutes > 0 && last && last.load === 0 && sumMinutes(steps) === r.cycleMinutes) {
+    last.minutes -= r.paddedMinutes;
+    if (last.minutes <= 0) steps.pop();
+  }
+  return steps;
+}
+
+// The server merges adjacent breaks. Index k of the normalized steps maps to editor row rows[k].
+function normalizedRows(steps) {
+  const rows = [];
+  steps.forEach((s, i) => { if (!(i > 0 && s.load === 0 && steps[i - 1].load === 0)) rows.push(i); });
+  return rows;
+}
+const rowLabel = (rows, k) => rows[k] == null ? '-' : String(rows[k] + 1);
+
+function stepWarnings(steps, sig) {
+  const avg = grainMinutes(sig.timeGrain);
+  const out = [];
+  steps.forEach((s, i) => {
+    if (s.load === 0) return;
+    if (s.load <= sig.degraded) out.push(`Row ${i + 1}: ${s.load}% is at or below the Degraded threshold (${sig.degraded}%). The node stays Healthy.`);
+    if (s.minutes < avg) out.push(`Row ${i + 1}: ${s.minutes} min is shorter than the ${avg}-min average window. The average stays below ${s.load}%.`);
+  });
+  return out;
+}
+
+function nextOnText(r, label) {
+  if (!r.nextOn) return '';
+  const step = r.steps[r.nextOn.step];
+  const parts = [label, step && stepText(step)].filter(Boolean).join(', ');
+  return `${fmt(r.nextOn.at)}${parts ? ` (${parts})` : ''}`;
+}
+
+function summaryText(r) {
+  if (!r || r.state === 'off') return 'No rhythm applied.';
+  const base = `Cycle ${r.cycleMinutes} min, ${r.cronJobs.length} CronJob(s)`;
+  if (r.state === 'active') return `${base}. Next ON ${nextOnText(r)}.`;
+  if (r.state === 'paused') return `${base}, all suspended.`;
+  return `${base}. The CronJobs disagree on suspend state or annotations. Apply rewrites them.`;
+}
+
+// ---- Rhythm: actions ----
+let steps = copySteps(PRESETS[0].steps);
+let applied = null;
+let seeded = false;
+let edited = false;
+let busy = false;
+let previewSeq = 0;
+let previewTimer = null;
+let lastPreview = null;
+
+function edit(next) {
+  steps = next;
+  edited = true;
+  renderSteps();
+}
+
+function renderPresets() {
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-sm';
+    b.textContent = p.name;
+    b.onclick = () => edit(copySteps(p.steps));
+    $('presets').append(b);
+  }
+}
+
+function numberInput(value, min, max, label, onValue) {
+  const input = document.createElement('input');
+  Object.assign(input, { type: 'number', min, max, value, inputMode: 'numeric' });
+  input.setAttribute('aria-label', label);
+  input.oninput = () => { if (input.value !== '' && !isNaN(input.valueAsNumber)) onValue(clampInt(input.valueAsNumber, min, max)); };
+  input.onchange = () => { input.value = clampInt(isNaN(input.valueAsNumber) ? min : input.valueAsNumber, min, max); onValue(Number(input.value)); };
+  return input;
+}
+
+function unit(input, text, area) {
+  const wrap = document.createElement('span');
+  wrap.className = `unit ${area}`;
+  wrap.append(input, text);
+  return wrap;
+}
+
+function smallButton(text, label, disabled, onclick) {
+  const b = document.createElement('button');
+  Object.assign(b, { type: 'button', className: 'btn btn-sm btn-icon', textContent: text, disabled, onclick });
+  b.setAttribute('aria-label', label);
+  b.title = label;
+  return b;
+}
+
+function renderStepTag(row, tag, load) {
+  row.classList.toggle('break', load === 0);
+  tag.textContent = load === 0 ? 'Break' : 'ON';
+  tag.style.background = load === 0 ? '' : loadColor(load);
+}
+
+function renderSteps() {
+  const box = $('steps');
+  box.innerHTML = '';
+  steps.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'step';
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = i + 1;
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    const slider = document.createElement('input');
+    Object.assign(slider, { type: 'range', min: 0, max: 100, step: 1, value: s.load, className: 'slider' });
+    slider.setAttribute('aria-label', `Row ${i + 1} load`);
+    const setLoad = v => { s.load = v; edited = true; slider.value = v; load.value = v; renderStepTag(row, tag, v); changed(); };
+    const minutes = numberInput(s.minutes, 1, 1440, `Row ${i + 1} minutes`, v => { s.minutes = v; edited = true; changed(); });
+    const load = numberInput(s.load, 0, 100, `Row ${i + 1} load %`, setLoad);
+    slider.oninput = () => setLoad(Number(slider.value));
+    const btns = document.createElement('span');
+    btns.className = 'btns';
+    btns.append(
+      smallButton('↑', `Move row ${i + 1} up`, i === 0, () => edit(moveItem(steps, i, i - 1))),
+      smallButton('↓', `Move row ${i + 1} down`, i === steps.length - 1, () => edit(moveItem(steps, i, i + 1))),
+      smallButton('✕', `Remove row ${i + 1}`, steps.length === 1, () => edit(steps.filter((_, j) => j !== i))),
+    );
+    row.append(n, unit(minutes, 'min', 'min'), slider, unit(load, '%', 'load'), tag, btns);
+    renderStepTag(row, tag, s.load);
+    box.append(row);
+  });
+  changed();
+}
+
+function renderWarnings() {
+  const list = $('step-warnings');
+  list.innerHTML = '';
+  for (const w of stepWarnings(steps, signal)) {
+    const li = document.createElement('li');
+    li.textContent = w;
+    list.append(li);
+  }
+}
+
+function renderButtons() {
+  const state = applied ? applied.state : 'off';
+  const canApply = hasOnStep(steps) && (seeded || edited);
+  $('editor').disabled = busy;
+  $('rhythm-apply').disabled = busy || !canApply;
+  $('apply-hint').textContent = !hasOnStep(steps) ? 'Add a row with load above 0 to apply.'
+    : !(seeded || edited) ? 'Waiting for the current rhythm.' : '';
+  $('rhythm-toggle').textContent = state === 'paused' ? 'Resume' : 'Pause';
+  $('rhythm-toggle').disabled = busy || (state !== 'active' && state !== 'paused');
+  $('rhythm-clear').disabled = busy || state === 'off';
+}
+
+function changed() {
+  renderButtons();
+  renderWarnings();
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(loadPreview, 300);
+}
+
+function clearPreview(message) {
+  lastPreview = null;
+  $('timeline').innerHTML = '';
+  $('scale').innerHTML = '';
+  $('preview-facts').innerHTML = '';
+  $('preview-pad').hidden = true;
+  $('cronjob-summary').textContent = 'CronJobs';
+  $('cronjobs').innerHTML = `<tr><td colspan="5" class="muted">${message}</td></tr>`;
+}
+
+function renderTimeline(r) {
+  const tl = $('timeline');
+  const width = tl.clientWidth;
+  tl.innerHTML = '';
+  for (const seg of segments(r)) {
+    const d = document.createElement('div');
+    d.className = 'seg' + (seg.load === 0 ? ' break' : '') + (seg.pad ? ' pad' : '');
+    d.style.flex = `${seg.minutes} 1 0`;
+    if (seg.load > 0) d.style.background = loadColor(seg.load);
+    d.title = seg.pad ? `+${seg.minutes} min padding` : stepText(seg);
+    const label = seg.load > 0 ? `${seg.minutes}′ ${seg.load}%` : `${seg.minutes}′`;
+    if (width * seg.minutes / r.cycleMinutes >= label.length * 7 + 8) d.textContent = label;
+    tl.append(d);
+  }
+}
+
+function fact(term, value, wide) {
+  const div = document.createElement('div');
+  if (wide) div.className = 'wide';
+  const dt = document.createElement('dt');
+  dt.textContent = term;
+  const dd = document.createElement('dd');
+  dd.textContent = value;
+  div.append(dt, dd);
+  return div;
+}
+
+function renderPreview(r, sent) {
+  lastPreview = r;
+  const rows = normalizedRows(sent);
+  renderTimeline(r);
+  $('scale').innerHTML = '';
+  for (const m of [0, r.cycleMinutes / 2, r.cycleMinutes]) {
+    const t = document.createElement('span');
+    t.textContent = `${+m.toFixed(1)} min`;
+    $('scale').append(t);
+  }
+  $('preview-facts').innerHTML = '';
+  $('preview-facts').append(
+    fact('Cycle', `${r.cycleMinutes} min`),
+    fact('Repeats', `${Math.round(1440 / r.cycleMinutes)}× per day`),
+    fact('Next ON', r.nextOn ? nextOnText(r, `row ${rowLabel(rows, r.nextOn.step)}`) : '-', true),
+  );
+  $('preview-pad').hidden = !(r.paddedMinutes > 0);
+  $('preview-pad').textContent = `+${r.paddedMinutes} min break added so the cycle divides 24 h.`;
+  $('cronjob-summary').textContent = `CronJobs (${r.cronJobs.length})`;
+  const body = $('cronjobs');
+  body.innerHTML = '';
+  if (!r.cronJobs.length) body.innerHTML = '<tr><td colspan="5" class="muted">No CronJobs (no ON row).</td></tr>';
+  for (const c of r.cronJobs) {
+    const tr = document.createElement('tr');
+    for (const [value, isCode] of [[c.name, true], [c.cron, true], [rowLabel(rows, c.step)], [c.minutes], [`${c.load}%`]]) {
+      const td = document.createElement('td');
+      if (isCode) { const code = document.createElement('code'); code.textContent = value; td.append(code); td.className = 'nowrap'; } else td.textContent = value;
+      tr.append(td);
+    }
+    body.append(tr);
+  }
+}
+
+async function loadPreview() {
+  const seq = ++previewSeq;
+  const sent = copySteps(steps);
+  try {
+    const r = await api('POST', '/api/rhythm/preview', { steps: sent });
+    if (seq !== previewSeq) return;
+    showError('rhythm-error', '');
+    renderPreview(r, sent);
+  } catch (e) {
+    if (seq !== previewSeq) return;
+    showError('rhythm-error', e.message);
+    clearPreview('No preview.');
+  }
+}
+
+function renderRhythm() {
+  const state = applied ? applied.state : 'unknown';
+  $('rhythm-state').textContent = state;
+  $('rhythm-badge').dataset.tone = STATE_TONE[state] || 'unknown';
+  $('rhythm-summary').textContent = applied ? summaryText(applied) : 'Current rhythm not loaded.';
+  renderButtons();
+}
+
+async function loadRhythm() {
+  try {
+    applied = await api('GET', '/api/rhythm');
+    showError('rhythm-poll-error', '');
+  } catch (e) {
+    showError('rhythm-poll-error', e.message);
+    renderRhythm();
+    return false;
+  }
+  if (applied.signal) { signal = { ...signal, ...applied.signal }; renderMetricsNote(); }
+  if (!seeded) {
+    seeded = true;
+    if (!edited && applied.state !== 'off' && applied.steps && applied.steps.length) steps = withoutPadding(applied);
+    renderSteps();
+  }
+  renderRhythm();
+  return true;
+}
+
+async function rhythmAction(method, url, body) {
+  busy = true;
+  renderButtons();
+  try {
+    const r = await api(method, url, body);
+    showError('rhythm-error', '');
+    return r;
+  } catch (e) {
+    showError('rhythm-error', e.message);
+    return null;
+  } finally {
+    busy = false;
+    await loadRhythm();
+    loadRun();
+  }
+}
+
+$('add-step').onclick = () => {
+  const last = steps[steps.length - 1];
+  edit([...steps, { minutes: 5, load: last && last.load > 0 ? 0 : 70 }]);
+};
+$('rhythm-apply').onclick = async () => {
+  const r = await rhythmAction('PUT', '/api/rhythm', { steps });
+  if (r && r.steps) { steps = withoutPadding(r); renderSteps(); }
+};
+$('rhythm-toggle').onclick = () => rhythmAction('POST', applied && applied.state === 'paused' ? '/api/rhythm/resume' : '/api/rhythm/pause');
+$('rhythm-clear').onclick = () => {
+  if (confirm('Clear the rhythm? This deletes all rhythm CronJobs.')) rhythmAction('DELETE', '/api/rhythm');
+};
+new ResizeObserver(() => { if (lastPreview) renderTimeline(lastPreview); }).observe($('timeline'));
+
+renderThemeToggle();
+renderMetricsNote();
+renderPresets();
+renderSteps();
+poll(loadRhythm, 10000);
+poll(loadRun, 5000);
+poll(loadMetrics, 15000);
+setInterval(renderRun, 1000);
+</script>
+</body>
+</html>

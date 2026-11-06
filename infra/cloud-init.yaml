@@ -1,0 +1,44 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+write_files:
+  - path: /usr/local/sbin/cpu-health-stress
+    owner: root:root
+    permissions: '0755'
+    encoding: b64
+    content: __RUNNER_BASE64__
+  - path: /etc/systemd/system/cpu-health-stress.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=CPU health demo stress schedule
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=simple
+      EnvironmentFile=-/etc/default/cpu-health-stress
+      ExecStart=/usr/local/sbin/cpu-health-stress start
+      ExecStop=/usr/local/sbin/cpu-health-stress terminate
+      Restart=on-failure
+      RestartSec=30
+      TimeoutStopSec=30
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - |
+    set -eu
+    install -d -m 0755 /opt/cpu-health-demo/stress
+    cat > /opt/cpu-health-demo/stress/Dockerfile <<'EOF'
+    FROM ubuntu:24.04
+    RUN apt-get update \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends stress-ng \
+      && rm -rf /var/lib/apt/lists/*
+    EOF
+    systemctl enable --now docker.service
+    docker build --pull -t cpu-health-stress:local /opt/cpu-health-demo/stress
+    systemctl daemon-reload
+    systemctl enable --now cpu-health-stress.service

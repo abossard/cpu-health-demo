@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: cpu-health-demo
+infra:
+  provider: bicep
+  path: infra/aks
+  module: main
+services:
+  stress-manager:
+    project: ./src/StressManager
+    language: dotnet
+    host: aks
+    docker:
+      remoteBuild: true
+    k8s:
+      namespace: stress-manager
+      deploymentPath: manifests
+      ingress:
+        name: stress-manager

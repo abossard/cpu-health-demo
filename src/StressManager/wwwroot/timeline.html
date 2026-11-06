@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Health timeline · CPU Stress Manager</title>
+<script>
+  try { const t = localStorage.getItem('theme-preference'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="timeline.css">
+</head>
+<body>
+<div class="app tl-app">
+  <header class="app-header">
+    <div class="app-brand">
+      <h1>CPU Stress Manager</h1>
+      <span class="muted tl-page">Health timeline</span>
+    </div>
+    <a class="btn btn-ghost" href="/">Rhythm</a>
+    <button type="button" id="theme-toggle" class="btn btn-ghost btn-icon"></button>
+  </header>
+
+  <main class="tl-main">
+    <div class="tl-toolbar">
+      <div class="cluster">
+        <div id="windows" class="seg-group" role="group" aria-label="Time window">
+          <button type="button" data-ms="3600000">1 h</button>
+          <button type="button" data-ms="10800000">3 h</button>
+          <button type="button" data-ms="21600000">6 h</button>
+          <button type="button" data-ms="43200000">12 h</button>
+          <button type="button" data-ms="86400000">24 h</button>
+        </div>
+        <label class="check"><input type="checkbox" id="live" checked> Live</label>
+        <button type="button" id="back-live" class="btn btn-sm btn-primary" hidden>Back to live</button>
+        <span id="status" class="status muted small"></span>
+      </div>
+      <div class="cluster toggles">
+        <label class="check"><input type="checkbox" id="t-lane"> Disagreement lane</label>
+        <label class="check"><input type="checkbox" id="t-highlight"> Highlight differences</label>
+        <label class="check"><input type="checkbox" id="t-overlay"> Overlay</label>
+        <label class="check"><input type="checkbox" id="t-skew"> Onset skew table</label>
+        <span class="hint muted small">Drag or flick to pan, wheel or pinch to zoom, Shift+drag for a range. Keys: + − ← → 0.</span>
+      </div>
+    </div>
+
+    <section class="card tl-card">
+      <div class="legend small">
+        <span class="lg" style="--c: var(--color-healthy)">Healthy</span>
+        <span class="lg" style="--c: var(--color-degraded)">Degraded</span>
+        <span class="lg" style="--c: var(--color-unhealthy)">Unhealthy</span>
+        <span class="lg" style="--c: var(--color-unknown)">Unknown</span>
+        <span class="lg lg-bubble">Annotations</span>
+        <span class="lg" style="--c: var(--tl-diff)">Nodes disagree</span>
+      </div>
+      <div id="rows" class="rows"></div>
+      <div id="empty" class="muted empty">Loading…</div>
+      <div id="error" class="tl-error" hidden></div>
+    </section>
+
+    <section id="skew-section" class="card tl-skew">
+      <div class="card-header">
+        <h2>Onset skew</h2>
+        <p class="muted small">Seconds after run start until each node went Degraded (D) and Unhealthy (U), for runs in view. A spread over 120 s is flagged.</p>
+      </div>
+      <div class="table-wrap"><table id="skew" class="table"></table></div>
+    </section>
+  </main>
+</div>
+<div id="tooltip" class="tooltip" hidden></div>
+<span id="color-probe" hidden></span>
+<script>if (new URLSearchParams(location.search).get('mock') === '1') document.write('<script src="timeline-mock.js"><\/script>');</script>
+<script src="timeline.js"></script>
+</body>
+</html>

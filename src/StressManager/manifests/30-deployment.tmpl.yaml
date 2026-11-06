@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-manager
+  namespace: stress-manager
+  labels:
+    app: stress-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stress-manager
+  template:
+    metadata:
+      labels:
+        app: stress-manager
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: stress-manager
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: stress-manager
+          image: "{{ .Env.SERVICE_STRESS_MANAGER_IMAGE_NAME }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AZURE_SUBSCRIPTION_ID
+              value: "{{ .Env.AZURE_SUBSCRIPTION_ID }}"
+            - name: AZURE_RESOURCE_GROUP
+              value: "{{ .Env.AZURE_RESOURCE_GROUP }}"
+            - name: AZURE_MANAGED_IDENTITY_ID
+              value: "{{ .Env.AZURE_MANAGED_IDENTITY_ID }}"
+            - name: HEALTH_MODEL_NAME
+              value: "{{ .Env.HEALTH_MODEL_NAME }}"
+            - name: HEALTH_MODEL_LOCATION
+              value: "{{ .Env.HEALTH_MODEL_LOCATION }}"
+            - name: STRESS_NAMESPACE
+              value: stress-manager
+            - name: STRESS_NODE_LABEL
+              value: workload=stress
+            - name: MANAGER_IMAGE
+              value: "{{ .Env.SERVICE_STRESS_MANAGER_IMAGE_NAME }}"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
